@@ -4,7 +4,7 @@
 
 Implement the two queries in `CS_E4780_Course_Project_2026.pdf`: five-minute price windows with EMA indicators, followed by buy/sell advisories when those indicators cross. Evaluate correctness, scalability, and resource use. Add visualization after the required processing works.
 
-The repository currently contains a Java 17 Maven project in `market_evaluator/`, a placeholder `evaluator.Main`, and a Saturday dataset file in `data/`. Flink has not yet been added.
+The repository currently contains a Java 17 Maven project in `market_evaluator/`, a placeholder `evaluator.Main`, and a weekday sample dataset in `data/sample-positive-prices-08.csv`. Flink has not yet been added.
 
 ## Proposed architecture
 
@@ -20,7 +20,7 @@ The repository currently contains a Java 17 Maven project in `market_evaluator/`
 ## 1. Inspect the data and settle processing rules
 
 - Inspect the CSV header and representative rows: delimiter, quoting, null markers, price format, date/time precision, and event types.
-- Inspect the existing Saturday file, then obtain a small weekday sample with actual price activity. Weekend traffic alone is insufficient to validate trading behavior.
+- Use the existing weekday sample in `data/sample-positive-prices-08.csv` as the current validation dataset; it already contains active trading-day data suitable for correctness checks.
 - Map the relevant fields: symbol, security type, last trade price, trading date/time, and system date/time.
 - Determine which fields identify a new price event and which timestamp should assign it to a window. Do not treat a repeated or carried price field as a new trade without checking the data semantics.
 - Measure timestamp disorder and duplicate timestamps on a sample. Define whether "last observed" means arrival order or greatest event timestamp, and specify a deterministic tie-breaker.
