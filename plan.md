@@ -29,7 +29,7 @@ The repository currently contains a Java 17 Maven project in `market_evaluator/`
 - Define EMA initialization precisely. The initial prior EMA is zero; the wording around the first window needs an explicit interpretation. A first positive update can satisfy the stated buy condition.
 - Document a late-event policy and a watermark strategy. Revisions to earlier windows would also affect subsequent EMAs, so choose a policy deliberately and count late events.
 
-Completion: a documented processing contract and small representative fixtures with expected outcomes.
+Completed: See [processing contract](docs/processing-contract.md)
 
 ## 2. Prepare the Maven project
 
@@ -108,7 +108,3 @@ Completion: a clear demonstration using real weekday data, with plotted values v
 - Verify the system from a clean checkout and ensure the submission repository is public.
 - State each member's contribution if this is a group project.
 - Submit the repository link and report by 27 November 2026.
-
-## Immediate next step
-
-Inspect the available CSV and a weekday sample, then write down timestamp, closing-price, empty-window, and late-event rules. These decisions should precede the Flink pipeline because they determine both implementation and expected results.
