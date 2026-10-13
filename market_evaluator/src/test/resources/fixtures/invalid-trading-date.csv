@@ -1,0 +1,4 @@
+# Fixture: ensures a populated but invalid Trading date is rejected instead of silently falling back to the system Date.
+# The row should count as an EVENT_TIMESTAMP rejection and produce no accepted events.
+ID,SecType,Date,Time,Last,Trading date,Trading time
+BADDATE.FR,E,08-11-2021,10:00:00,4.0,99-99-2021,09:00:00

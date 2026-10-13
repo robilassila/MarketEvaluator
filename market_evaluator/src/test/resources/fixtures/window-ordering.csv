@@ -1,4 +1,5 @@
-# Synthetic test data; not extracted from the DEBS dataset.
+# Fixture: verifies source ordering, equal-timestamp tie-breaking, and the selected closing record within a five-minute window.
+# The parser keeps every positive-price record in order and preserves the latest valid event for the symbol/window.
 ID,SecType,Date,Time,Last,Trading time,Trading date,Last trade time,Last volume,Total volume
 SAME.FR,E,08-11-2021,09:00:00.000,10,09:00:00.000,08-11-2021,09:00:00.000,,
 SAME.FR,E,08-11-2021,09:04:59.900,11,09:04:59.900,08-11-2021,09:04:59.900,1,1

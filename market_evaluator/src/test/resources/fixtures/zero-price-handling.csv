@@ -1,4 +1,5 @@
-# Synthetic test data; not extracted from the DEBS dataset.
+# Fixture: validates the contract rule that zero prices are ignored before timestamp validation and do not advance event time.
+# Positive prices remain eligible, while zero-price rows are counted as ignored_zero instead of rejected.
 ID,SecType,Date,Time,Last,Trading time,Trading date,Last trade time,Last volume,Total volume
 PRICE.FR,E,08-11-2021,09:00:00.000,10,09:00:00.000,08-11-2021,09:00:00.000,,
 PRICE.FR,E,08-11-2021,09:04:00.000,0,09:04:00.000,08-11-2021,09:04:00.000,,

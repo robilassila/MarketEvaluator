@@ -1,0 +1,8 @@
+# Fixture: verifies that literal special values such as NULL, NaN, and Infinity are treated as non-empty price strings for validation.
+# Only the empty Last field counts as non_price; the literal special values are rejected as invalid prices while VALID.FR remains accepted.
+ID,SecType,Date,Time,Last,Trading date,Trading time
+NULL.FR,E,08-11-2021,10:00:00,NULL,08-11-2021,09:00:00
+NAN.FR,E,08-11-2021,10:00:00,NaN,08-11-2021,09:00:00
+INF.FR,E,08-11-2021,10:00:00,Infinity,08-11-2021,09:00:00
+EMPTY.FR,E,08-11-2021,10:00:00,,08-11-2021,09:00:00
+VALID.FR,E,08-11-2021,10:00:00,2.5,08-11-2021,09:00:00

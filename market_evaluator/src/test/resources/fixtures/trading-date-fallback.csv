@@ -1,0 +1,4 @@
+# Fixture: confirms that a missing Trading date falls back to the system Date while keeping the selected Trading time as the event clock.
+# This case should accept the row and use 2021-11-08T09:00:00.250+02:00 as the timestamp.
+ID,SecType,Date,Time,Last,Trading date,Trading time
+FALLBACK.FR,E,08-11-2021,08:30:00,3.5,,09:00:00.250
