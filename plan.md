@@ -4,7 +4,7 @@
 
 Implement the two queries in `CS_E4780_Course_Project_2026.pdf`: five-minute price windows with EMA indicators, followed by buy/sell advisories when those indicators cross. Evaluate correctness, scalability, and resource use. Add visualization after the required processing works.
 
-The repository currently contains a Java 17 Maven project in `market_evaluator/`, a placeholder `evaluator.Main`, and a weekday sample dataset in `data/sample-positive-prices-08.csv`. Flink has not yet been added.
+The repository contains a Java 17 Maven project in `market_evaluator/`, Apache Flink 2.3.0, and a weekday sample dataset in `data/sample-positive-prices-08.csv`. Ingestion and Query 1 are implemented; Query 2 and subscription/file output remain next.
 
 ## Proposed architecture
 
@@ -41,33 +41,22 @@ Completed: See [processing contract](docs/processing-contract.md)
 - Organize code into ingestion, models, processing, output, and configuration packages. Keep the entry point small.
 - Keep full datasets and generated outputs outside Git. Commit only small fixtures that are suitable for redistribution, with attribution where applicable.
 
-Completion: a reproducible build and a minimal local Flink job that reads a fixture and terminates successfully.
+Completed prerequisite setup: pinned Flink 2.3.0, runtime logging, JUnit, Maven execution, and configurable input paths/processing parallelism/watermark delay. Part 3 supplies the terminating local Flink job. Output-directory configuration and subscriptions remain with part 4; rate-controlled replay remains optional.
 
-## 3. Build a sequential correctness reference
-
-- Implement a simple calculator independent of Flink's window and state machinery, using the agreed processing contract.
-- Produce expected closing prices, EMA values, and advisories for small inputs.
-- Use the formula `EMA_j = close * (2 / (1 + j)) + previous_EMA_j * (1 - 2 / (1 + j))` for `j = 38` and `j = 100`.
-- Emit BUY when the current EMA38 is greater than EMA100 and the previous EMA38 was less than or equal to EMA100.
-- Emit SELL when the current EMA38 is less than EMA100 and the previous EMA38 was greater than or equal to EMA100.
-- Test exact window boundaries, multiple exchanges, equality, both crossover directions, initialization, empty windows, and ordering rules. Choose and document numeric precision and comparison behavior.
-
-Completion: hand-checked fixtures and a reference output for a representative real-data sample.
-
-## 4. Implement ingestion and Query 1
+## 3. Implement ingestion and Query 1
 
 - Read files without loading the dataset into memory. Process daily files in chronological order and preserve the agreed source-order semantics.
 - Parse only the required fields while validating records and counting rejected rows.
-- Ensure non-price records can advance time where appropriate, even if they do not contribute to the window closing price.
+- Follow the processing contract: non-price and zero-price records cannot advance time or contribute to a closing price.
 - Assign timestamps and generate watermarks before grouping by symbol. Handle idle input partitions if relevant.
 - Implement five-minute windows aligned to dataset midnight, with explicit boundary behavior.
 - Aggregate closing prices incrementally rather than storing every price event in a window.
 - Update per-symbol EMA state only when a window is finalized, in chronological window order. Implement the agreed empty-window behavior explicitly.
 - Emit indicator records containing symbol, window boundaries, closing price, EMA38, and EMA100.
 
-Completion: Query 1 matches reference results on fixtures and a real-data sample, including out-of-order cases.
+Completed: bounded ordered ingestion, deterministic lateness decisions, incremental five-minute windows, and keyed EMA state. End-to-end Flink fixture tests match independent expectations, including out-of-order/late events and final-window flushing. The complete 10,000-event sample matches an independent scan at processing parallelism 1, 2, and 4: 1,263 indicators, 1,227 symbols, and zero late events. See [Query 1 validation](docs/processing-contract.md#query-1-validation).
 
-## 5. Implement Query 2, subscriptions, and output
+## 4. Implement Query 2, subscriptions, and output
 
 - Compare current and previous EMA values using the exact crossover inequalities.
 - Emit one advisory per qualifying finalized window, with a deterministic identity based on symbol, window, and direction.
@@ -76,12 +65,16 @@ Completion: Query 1 matches reference results on fixtures and a real-data sample
 - Write indicator and advisory records to structured files, including run metadata so outputs from different experiments remain distinguishable.
 - Document output behavior on replay or failure; do not claim exactly-once results without verifying both source and sink guarantees.
 
-Completion: both queries match the reference, and changing subscriptions changes published results without changing calculations.
+Completion: both queries match independently calculated fixture expectations, including BUY/SELL and no-signal cases, and changing subscriptions changes published results without changing calculations.
 
-## 6. Evaluate correctness and performance
+## 5. Evaluate correctness and performance
 
-- Compare complete outputs against the reference on small samples and a larger weekday input, with a documented floating-point tolerance for indicator values.
-- Test the same input at different parallelism settings and confirm equivalent results.
+- Derive expected results independently from the processing contract for small CSV fixtures. Calculate closing records, EMA38/EMA100, and advisories by hand or with separate arithmetic; do not generate expectations using the production calculation code.
+- Cover exact five-minute boundaries, equal timestamps and source-position tie-breaks, out-of-order and late events, empty windows, overnight gaps, zero prices, EMA initialization, crossover equality, and final-window flushing at bounded input completion.
+- Test parsing, closing-price selection, EMA updates, and crossover conditions individually, then run the actual CSV-to-output Flink pipeline on the fixtures with every operator configured at parallelism 1. Assert complete output records, including closing provenance and exact advisory expectations; use the processing contract's absolute or relative tolerance of 1e-9 for EMA values.
+- Independently inspect selected windows and calculate short EMA sequences from the real-data sample. Check invariants on larger inputs: each close belongs to an eligible event in its window, closing selection follows the contract, symbols have independent state, and subscription changes do not alter calculations.
+- Run the same input at parallelism 1, 2, and 4 where hardware permits, preserving the specified source-order and late-event semantics. Compare complete results by symbol and window, ignoring output order while checking for missing or duplicate records. Require identical closing records and advisories, with the documented tolerance for EMAs.
+- Treat agreement across parallelism settings as evidence of parallel execution consistency. Independently calculated expectations establish correctness for tested cases; a parallelism-1 run alone does not establish correctness. Report test coverage and limitations explicitly.
 - Benchmark increasing input sizes and available worker counts, for example 1, 2, 4, and 8 where hardware permits.
 - Measure input rows per second, relevant price events per second, total runtime, CPU, memory, output volume, and backpressure.
 - Separate processing latency from watermark waiting time and from the historical timestamps in the dataset.
@@ -89,9 +82,9 @@ Completion: both queries match the reference, and changing subscriptions changes
 - Record hardware, software versions, settings, warm-up procedure, repeated measurements, and variability. Label single-machine scaling accurately.
 - Attempt full-week processing after smaller runs are correct and resource requirements are understood.
 
-Completion: reproducible benchmark commands, saved measurements, and charts supporting the report's conclusions.
+Completion: passing unit and end-to-end fixture tests, documented independent sample checks and invariants, equivalent outputs across tested parallelism settings, and reproducible benchmark commands, saved measurements, and charts supporting the report's conclusions.
 
-## 7. Add visualization for bonus points
+## 6. Add visualization for bonus points
 
 - Choose a lightweight plotting or dashboard tool after the output format is stable.
 - Show a selected symbol's five-minute closing prices, both EMA curves, and BUY/SELL markers.
@@ -100,7 +93,7 @@ Completion: reproducible benchmark commands, saved measurements, and charts supp
 
 Completion: a clear demonstration using real weekday data, with plotted values verified against processor output.
 
-## 8. Prepare submission
+## 7. Prepare submission
 
 - Write the 4–5 page report using the ACM template: abstract, introduction, architecture, implementation, evaluation, conclusion, and references.
 - Explain semantic assumptions, design tradeoffs, measured scaling limits, and any unimplemented extensions.

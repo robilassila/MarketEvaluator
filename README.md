@@ -2,58 +2,43 @@
 
 ## Current application status
 
-The application currently reads and validates CSV input, then prints each
-accepted price event and a parsing summary. Window aggregation, EMA calculation,
-crossover detection, and the downstream event consumer have not been implemented
-yet; those will replace the temporary event-printing behavior as development
-continues.
+Query 1 runs as a bounded Apache Flink streaming job: incrementally read CSV
+files, select five-minute closing prices, and calculate EMA38 and EMA100 for
+all symbols. Finalized indicators and a final processing summary are printed
+to stdout. Query 2 advisories, subscriptions, and structured file sinks remain
+for part 4.
+
+The semantics are specified in [the processing contract](docs/processing-contract.md).
 
 ## Run locally
 
-Install JDK 17 or newer and Maven.
+Install JDK 17 and Maven. Flink dependencies are pinned to 2.3.0 and Maven
+starts a local Flink runtime.
 
-From the repository root, compile and run the current parser-only application
-on the included sample:
+Ensure Maven uses JDK 17 with `mvn -version`. On macOS:
+
+```bash
+export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+export PATH="$JAVA_HOME/bin:$PATH"
+mvn -version
+```
+
+From the repository root:
 
 ```bash
 cd market_evaluator
-mvn compile exec:java \
-  -Dexec.mainClass=evaluator.Main \
-  -Dexec.args="../data/sample-positive-prices-08.csv"
+mvn compile exec:exec \
+  -Devaluator.args="../data/sample-positive-prices-08.csv"
 ```
 
-The CSV path is a required program argument. The parser prints a legend, then
-one line for each accepted event, followed by a summary. The included sample
-prints 10,000 event lines. To parse a different file, pass its path instead:
+The application accepts one or more CSV file paths, plus optional processing
+parallelism and watermark delay:
+
+```text
+evaluator.Main [--parallelism N] [--watermark-delay-ms D] <csv-file>...
+```
 
 ```bash
-mvn compile exec:java \
-  -Dexec.mainClass=evaluator.Main \
-  -Dexec.args="/path/to/trades.csv"
+mvn compile exec:exec \
+  -Devaluator.args="--parallelism 4 --watermark-delay-ms 65000 /path/to/day-09.csv /path/to/day-08.csv"
 ```
-
-If the path is missing or extra arguments are provided, the application prints
-usage instructions. If the file cannot be read or parsed, it prints an error
-and exits with a non-zero status.
-
-## Unit testing
-
-Run the project test suite with Maven:
-
-```bash
-cd market_evaluator
-mvn test
-```
-
-This executes the Java tests for the parser and validation behavior, including
-fixture-driven checks for:
-
-- window ordering and source provenance
-- zero-price handling before timestamp validation
-- quoted and multiline CSV parsing
-- invalid or missing required headers
-- missing `Trading date` fallback to `Date`
-- invalid populated `Trading date` rejection
-- literal special price values like `NULL`, `NaN`, and `Infinity`
-
-The tests are designed to match the parsing contract and dataset expectations.

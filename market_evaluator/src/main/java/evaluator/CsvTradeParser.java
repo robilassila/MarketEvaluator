@@ -60,19 +60,99 @@ public final class CsvTradeParser {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(eventConsumer, "eventConsumer");
 
-        MutableSummary summary = new MutableSummary();
-        Header[] header = new Header[1];
-        readCsv(path, record -> {
-            if (header[0] == null) {
-                header[0] = validateHeader(path, record);
-            } else {
-                processRow(record, header[0], eventConsumer, summary);
+        try (RecordReader reader = open(path)) {
+            ParsedRow row;
+            while ((row = reader.nextRow()) != null) {
+                if (row.event() != null) {
+                    eventConsumer.accept(row.event());
+                }
             }
-        });
-        if (header[0] == null) {
-            throw new IOException(path + ": CSV has no header record");
+            return reader.summary();
         }
-        return summary.toImmutable();
+    }
+
+    public RecordReader open(Path path) throws IOException {
+        return new RecordReader(path);
+    }
+
+    /** The system date identifies a daily file; it does not change event-time validation. */
+    public LocalDate discoverDate(Path path) throws IOException {
+        try (RecordReader reader = open(path)) {
+            CsvRecord record;
+            while ((record = reader.nextRecord()) != null) {
+                try {
+                    return LocalDate.parse(value(record.fields(), reader.header, "Date"), DATE_FORMAT);
+                } catch (DateTimeParseException ignored) {
+                    // Keep scanning until a usable system date is encountered.
+                }
+            }
+        }
+        throw new IOException(path + ": no valid system Date for daily-file ordering");
+    }
+
+    public record ParsedRow(TradeEvent event) { }
+
+    /** Reads at most one logical data record per call, preserving physical provenance. */
+    public static final class RecordReader implements AutoCloseable {
+        private final BufferedReader reader;
+        private final CsvState state;
+        private final CsvRecord[] ready = new CsvRecord[1];
+        private final MutableSummary summary = new MutableSummary();
+        private final Header header;
+        private long lineNumber;
+        private boolean finished;
+
+        private RecordReader(Path path) throws IOException {
+            reader = Files.newBufferedReader(path, StandardCharsets.UTF_8);
+            state = new CsvState(path, record -> ready[0] = record);
+            try {
+                CsvRecord first = nextRecord();
+                if (first == null) {
+                    throw new IOException(path + ": CSV has no header record");
+                }
+                header = validateHeader(path, first);
+            } catch (IOException | RuntimeException exception) {
+                reader.close();
+                throw exception;
+            }
+        }
+
+        private CsvRecord nextRecord() throws IOException {
+            if (finished) {
+                return null;
+            }
+            String line;
+            while ((line = reader.readLine()) != null) {
+                state.acceptLine(line, ++lineNumber);
+                if (ready[0] != null) {
+                    CsvRecord record = ready[0];
+                    ready[0] = null;
+                    return record;
+                }
+            }
+            state.finish();
+            finished = true;
+            return null;
+        }
+
+        public ParsedRow nextRow() throws IOException {
+            CsvRecord record = nextRecord();
+            if (record == null) {
+                return null;
+            }
+            TradeEvent[] event = new TradeEvent[1];
+            processRow(record, header, value -> event[0] = value, summary);
+            return new ParsedRow(event[0]);
+        }
+
+        public ParseSummary summary() {
+            return summary.toImmutable();
+        }
+
+        @Override
+        public void close() throws IOException {
+            reader.close();
+        }
     }
 
     private static Header validateHeader(Path path, CsvRecord record) throws IOException {
@@ -168,19 +248,6 @@ public final class CsvTradeParser {
     private static String value(List<String> fields, Header header, String name) {
         int index = header.indexes().get(name);
         return index < fields.size() ? fields.get(index) : "";
-    }
-
-    private static void readCsv(Path path, CsvRecordConsumer consumer) throws IOException {
-        try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-            CsvState state = new CsvState(path, consumer);
-            String line;
-            long lineNumber = 0;
-            while ((line = reader.readLine()) != null) {
-                lineNumber++;
-                state.acceptLine(line, lineNumber);
-            }
-            state.finish();
-        }
     }
 
     public record TradeEvent(
