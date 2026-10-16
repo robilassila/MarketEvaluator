@@ -100,7 +100,9 @@ class QueryOnePipelineTest {
     }
 
     @Test void zeroDelayFinalizesAtExactBoundary() throws Exception {
-        Run result = run(FIXTURES.resolve("window-ordering.csv"), 1, 0);
+        JobConfig config = JobConfig.parse(new String[]{FIXTURES.resolve("window-ordering.csv").toString()});
+        assertEquals(0L, config.watermarkDelayMs());
+        Run result = run(config);
         assertEquals(4, result.records.size());
         record(result.records.get(1), "SAME.FR", "2021-11-08T09:00:00+02:00", 12, 8, 0,
                 "2021-11-08T09:04:59.900+02:00", 24.0 / 39, 24.0 / 101);
@@ -236,7 +238,7 @@ class QueryOnePipelineTest {
         assertEquals(0, Main.run(new String[]{FIXTURES.resolve("window-ordering.csv").toString()},
                 new PrintStream(output), new PrintStream(errors)), errors.toString());
         assertTrue(output.toString().startsWith("symbol,window_start,window_end,close,ema38,ema100"));
-        assertTrue(output.toString().contains("SAME.FR,2021-11-08T09:00+02:00,2021-11-08T09:05+02:00,13.0"));
+        assertTrue(output.toString().contains("SAME.FR,2021-11-08T09:00+02:00,2021-11-08T09:05+02:00,12.0"));
         assertTrue(output.toString().contains("indicators=4"));
         assertTrue(output.toString().contains("parser_accepted=10"));
         assertFalse(output.toString().contains("dataStreamCollect_"));
@@ -347,6 +349,12 @@ class QueryOnePipelineTest {
                 new String[]{"--unknown", "file.csv"}, new String[]{"file.csv", "./file.csv"})) {
             assertThrows(IllegalArgumentException.class, () -> JobConfig.parse(args));
         }
+    }
+
+    @Test void configurationAllowsAnExplicitWatermarkDelay() throws Exception {
+        JobConfig config = JobConfig.parse(new String[]{"--watermark-delay-ms", "65000",
+                FIXTURES.resolve("window-ordering.csv").toString()});
+        assertEquals(65_000L, config.watermarkDelayMs());
     }
 
     @Test void incrementalAggregateAndTimeModelsUseExplicitTypes() {

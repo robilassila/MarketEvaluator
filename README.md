@@ -32,7 +32,7 @@ mvn compile exec:exec \
 ```
 
 The application accepts one or more CSV file paths, plus optional processing
-parallelism and watermark delay:
+parallelism (default 1) and watermark delay (default 0):
 
 ```text
 evaluator.Main [--parallelism N] [--watermark-delay-ms D] <csv-file>...

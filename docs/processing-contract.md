@@ -117,7 +117,8 @@ among accepted price events in that symbol's window. Retain only this aggregate,
 not every price, in the future streaming implementation.
 
 Let `H` be the greatest accepted price-event timestamp seen so far, truncated
-to milliseconds, and `D` the nonnegative configured watermark delay in milliseconds.
+to milliseconds, and `D` the nonnegative configured watermark delay in milliseconds
+(default `0`).
 After processing a record, finalize every populated window whose end is at or
 before `H - D`, in increasing window order for each symbol. A new record is late
 if its window end was at or before that cutoff **before** the record arrived.
@@ -131,16 +132,13 @@ watermark assignment. The implemented generator emits the equivalent watermark
 after each forwarded positive-price event. The single ordered source avoids
 progress coordination between concurrent source partitions.
 
-The initial delay is **65 seconds (65,000 milliseconds)**: the maximum global
-high-water disorder among accepted positive-price events across the inspected
-daily inputs, rounded up to whole seconds. The retained Part 1 estimate is 64.517 seconds. The original inspection artifacts
-are absent from this checkout, so that full-input estimate is not independently
-reverified by the current sample tests. This is an empirical default for
-these inputs, not a guarantee for unseen days. Exclude zero prices when measuring
-it; they do not participate in event-time progress. Preserve missing-date
-fallbacks for positive prices. Full input completion advances the watermark to
-infinity and finalizes all remaining populated windows. No empty windows are
-generated.
+With the default `D = 0`, a window is evaluated when event time reaches its end,
+which is the start of the next five-minute window, as stated in the PDF. A
+positive `--watermark-delay-ms` is an explicit opt-in to additional disorder
+tolerance and correspondingly later evaluation; it is not the default or
+required by the PDF. Zero prices do not participate in event-time progress.
+Full input completion advances the watermark to infinity and finalizes all
+remaining populated windows. No empty windows are generated.
 
 ## Indicators and advisories
 
@@ -198,10 +196,11 @@ Tests use independent fixture arithmetic and a sample-specific independent scan.
 ## Query 1 validation
 
 The included `data/sample-positive-prices-08.csv` contains 10,000 positive-price
-records across 1,227 symbols. At the default 65-second delay, independent scanning
-finds zero late events and 1,263 populated symbol/windows. The Flink test compares
-all closing records, provenance, and EMA values against this independent scan
-at processing parallelism 1, 2, and 4.
+records across 1,227 symbols. The sample oracle uses an explicit 65-second delay
+to validate configurable disorder tolerance and compares closing records,
+provenance, and EMA values with Flink at processing parallelism 1, 2, and 4.
+Separate fixture coverage verifies that the default zero delay evaluates at the
+next-window boundary.
 
 For `IEBBB.FR`, the independently selected closes are all 52.69:
 

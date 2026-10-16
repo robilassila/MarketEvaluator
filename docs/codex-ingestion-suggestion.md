@@ -13,22 +13,27 @@ Reader 3 → parse → timestamps + watermarks ─┘       ↓
                                           Per-symbol EMAs
 ```
 
-Each reader maintains its own latest timestamp and emits:
+Each reader must track progress conservatively and emit a watermark without
+adding a delay by default, so windows evaluate at the next-window boundary:
 
 ```text
-reader watermark = reader’s latest timestamp − delay − 1 ms
+reader watermark = reader’s latest timestamp − 1 ms
 ```
 
 Downstream, Flink uses the **minimum watermark across active inputs**. This prevents a fast reader from closing windows while another reader is still behind. [Flink watermark documentation](https://nightlies.apache.org/flink/flink-docs-master/docs/dev/datastream/event-time/generating_watermarks/)
 
 For example:
 
-| Reader | Latest timestamp | Watermark with 65-second delay |
+| Reader | Latest timestamp | Watermark |
 |---|---|---|
-| A | 09:12:00 | 09:10:54.999 |
-| B | 09:07:00 | 09:05:54.999 |
+| A | 09:12:00 | 09:11:59.999 |
+| B | 09:07:00 | 09:06:59.999 |
 
-The combined watermark is **09:05:54.999**. The `[09:00, 09:05)` windows can close, but `[09:05, 09:10)` windows stay open. Those closed windows can immediately feed the EMA operator—even though neither reader has finished.
+The combined watermark is **09:06:59.999**. It has passed the end of
+`[09:00, 09:05)`, so that window can close. It has not passed the end of
+`[09:05, 09:10)`, so that window must stay open until the combined watermark
+reaches at least **09:09:59.999**. Closed windows can immediately feed the EMA
+operator—even though neither reader has finished.
 
 For our implementation, this requires three changes:
 
@@ -42,6 +47,9 @@ The closing-price selection and EMA formulas can stay.
 
 **The input split strategy matters.** Giving one reader Monday and another Friday lets Friday run far ahead, accumulating records while Monday holds back window closure. Prefer splits covering similar time ranges, or coordinate their progress so fast readers cannot get too far ahead. Any reader must also account for earlier data in splits it has yet to read before announcing progress.
 
-This design still permits late records: a reader’s watermark is a promise based on the configured disorder allowance, not proof that it has seen every earlier timestamp. It also changes the current global replay-based lateness semantics.
+This design still permits late records if the inputs violate their declared
+progress; count and drop them consistently with the next-window-start rule.
 
-The result is **parallel reading and parsing, incremental window results, and bounded delay before EMA updates**, without waiting for the entire dataset.
+The result is **parallel reading and parsing, incremental window results, and
+window evaluation at the PDF's next-window boundary**, without waiting for the
+entire dataset.

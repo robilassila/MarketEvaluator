@@ -20,7 +20,7 @@ public record JobConfig(List<String> inputs, int parallelism, long watermarkDela
 
     public static JobConfig parse(String[] args) throws IOException {
         int parallelism = 1;
-        long delay = 65_000;
+        long delay = 0;
         List<Path> paths = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
