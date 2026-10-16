@@ -1,8 +1,8 @@
 # MarketEvaluator processing contract
 
 This is the Part 1 contract for ingestion, five-minute closing prices, EMA38,
-EMA100, and crossovers. It specifies expected behavior; the Java/Flink processor
-and sequential reference calculator are implemented in later parts.
+EMA100, and crossovers. The Java/Flink Query 1 processor implements ingestion, closing prices, and EMAs.
+Crossover detection and subscription filtering remain for part 4.
 
 ## Requirements and chosen interpretations
 
@@ -28,8 +28,9 @@ are project defaults where the PDF requirements need interpretation:
 | Late event | Drop and count if its window was already finalized; no revisions |
 | End of bounded input | Finalize all remaining populated windows |
 
-These choices are supported or qualified by the [inspection findings](data-inspection.md)
-and [fixture expectations](../market_evaluator/src/test/resources/fixtures/README.md).
+These choices are exercised by the parser and Query 1 tests in
+`market_evaluator/src/test/java/evaluator/`. Inspection documents referenced by
+earlier versions of this contract are not present in this checkout.
 
 ## CSV and validation
 
@@ -101,9 +102,13 @@ literal CEST interpretation; actual Central European civil time in November
 would use a different offset. Window labels always include the chosen offset.
 
 Process daily files in ascending dataset date order, independent of CLI order.
-For multiple files on the same date, sort by normalized relative path. Synthetic
-fixtures are currently individual files, replayed in their existing row order. A source position is the
-pair `(file ordinal, physical starting line)`. Keep it through parallel ingestion.
+Discover each daily file's date from its first strictly valid system `Date`,
+without changing event timestamp validation. Reject undated files in multi-file
+runs. For multiple files on the same date, sort by normalized path relative to
+the invocation directory. A single file needs no date-discovery pass.
+A source position is the pair `(zero-based file ordinal, physical starting line)`.
+Ingestion and the global lateness gate run at parallelism 1; keyed window and
+EMA processing may run in parallel. Keep source positions through all stages.
 
 Windows are `[start, end)`, five minutes long, beginning at local midnight.
 A price exactly at `09:05:00` belongs to `[09:05,09:10)`. The closing record is
@@ -121,15 +126,16 @@ than `D` and still be accepted if its window remains open.
 
 For Flink's millisecond window timers, the equivalent watermark is
 `H - D - 1 ms`; a window's last timestamp is `end - 1 ms`. Never revise finalized
-windows or downstream EMA state. Periodic watermark emission can delay physical
-delivery but must preserve this logical acceptance order. Parallel source
-partitions must coordinate progress; a faster partition must not finalize a
-slower partition's windows prematurely.
+windows or downstream EMA state. The singleton lateness gate applies this logical acceptance order before
+watermark assignment. The implemented generator emits the equivalent watermark
+after each forwarded positive-price event. The single ordered source avoids
+progress coordination between concurrent source partitions.
 
 The initial delay is **65 seconds (65,000 milliseconds)**: the maximum global
 high-water disorder among accepted positive-price events across the inspected
-daily inputs, rounded up to whole seconds. The underlying maximum is 64.517
-seconds, recorded in the inspection findings. This is an empirical default for
+daily inputs, rounded up to whole seconds. The retained Part 1 estimate is 64.517 seconds. The original inspection artifacts
+are absent from this checkout, so that full-input estimate is not independently
+reverified by the current sample tests. This is an empirical default for
 these inputs, not a guarantee for unseen days. Exclude zero prices when measuring
 it; they do not participate in event-time progress. Preserve missing-date
 fallbacks for positive prices. Full input completion advances the watermark to
@@ -160,8 +166,58 @@ BUY because both prior EMAs are zero. Zero prices never produce a closing price.
 Empty intervals preserve both state values and produce no comparison.
 Compute and detect for all symbols; subscriptions only filter published records.
 
-Future Java tests should assert the symbol, offset-qualified window boundaries,
-closing price, both EMAs, advisory, and closing record's source position directly.
-Expected-result JSON files are not retained. Indicator verification permits absolute or relative error
+Query 1 tests assert symbol, window boundaries, closing price, both EMAs, and
+closing provenance directly; CLI tests also verify offset-qualified formatting.
+Advisory tests belong to part 4. Expected-result JSON files are not retained. Indicator verification permits absolute or relative error
 `1e-9`: `abs(actual - expected) <= max(1e-9, 1e-9 * abs(expected))`.
 This tolerance never changes crossover inequalities or advisory expectations.
+
+## Query 1 implementation
+
+`evaluator.processing.QueryOnePipeline` builds the bounded streaming graph:
+ordered CSV source → global lateness gate → timestamp/watermark assignment →
+keyed incremental five-minute aggregation → keyed EMA state.
+
+Only the closing candidate is retained per open symbol/window. Finalized windows
+are emitted chronologically per symbol, with duplicate/decreasing window guards.
+No empty windows are generated. EMA state persists across gaps and day boundaries.
+Records use primitive epoch microseconds for closing order and epoch milliseconds
+for Flink window timers; output is rendered at fixed `+02:00`.
+
+The CLI consumes indicators incrementally and reports Flink accumulators after
+successful completion. It owns the local MiniCluster lifecycle: completion does
+not stop the cluster until result collection, counter retrieval, and iterator
+cleanup are finished. Failure paths also close the cluster. Per-file parser summaries contribute counts without
+creating event-time progress. Automatic restart and checkpoint recovery are
+disabled. Results printed before a failure are partial, and replay prints results
+again; stdout has no exactly-once publication guarantee.
+
+No standalone sequential reference calculator is present in this checkout.
+Tests use independent fixture arithmetic and a sample-specific independent scan.
+
+## Query 1 validation
+
+The included `data/sample-positive-prices-08.csv` contains 10,000 positive-price
+records across 1,227 symbols. At the default 65-second delay, independent scanning
+finds zero late events and 1,263 populated symbol/windows. The Flink test compares
+all closing records, provenance, and EMA values against this independent scan
+at processing parallelism 1, 2, and 4.
+
+For `IEBBB.FR`, the independently selected closes are all 52.69:
+
+| Window start (+02:00) | Closing source line | EMA38 | EMA100 |
+| --- | ---: | ---: | ---: |
+| 2021-11-08 07:00 | 242 | 2.702051282051282 | 1.0433663366336634 |
+| 2021-11-08 07:05 | 491 | 5.265535831689677 | 2.0660719537300265 |
+| 2021-11-08 07:10 | 722 | 7.697559635192770 | 3.0685259744482436 |
+| 2021-11-08 07:15 | 9566 | 10.004864269285449 | 4.051129420498773 |
+
+The first state update is `52.69 * 2/39` and `52.69 * 2/101`, from zero priors.
+Subsequent updates apply the stated recurrence without rounding.
+
+The sample oracle deliberately handles the sample's unquoted, positive-price
+rows only, and asserts those assumptions. Parser behavior for quoted/multiline
+records and invalid inputs is checked separately. Fixture tests provide explicit
+expectations for late events, exact boundaries, timestamp ties, empty windows,
+zero/non-price records, overnight gaps, file ordering, and bounded completion.
+This validation does not establish performance or correctness on all unseen data.

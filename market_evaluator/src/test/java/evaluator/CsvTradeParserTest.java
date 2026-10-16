@@ -25,17 +25,17 @@ class CsvTradeParserTest {
     private final CsvTradeParser parser = new CsvTradeParser();
 
     @Test
-    void cliPrintsUsageWhenInputArgumentIsMissingOrExtra() {
+    void cliPrintsUsageWhenInputArgumentIsMissingOrOptionsAreInvalid() {
         ByteArrayOutputStream errorBytes = new ByteArrayOutputStream();
         PrintStream error = new PrintStream(errorBytes);
 
         assertEquals(2, Main.run(new String[0], new PrintStream(new ByteArrayOutputStream()), error));
-        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main <csv-file>"));
+        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main [--parallelism N]"));
 
         errorBytes.reset();
-        assertEquals(2, Main.run(new String[]{"first.csv", "second.csv"},
+        assertEquals(2, Main.run(new String[]{"--parallelism", "0", "first.csv"},
                 new PrintStream(new ByteArrayOutputStream()), error));
-        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main <csv-file>"));
+        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main [--parallelism N]"));
     }
 
     @Test
@@ -47,7 +47,7 @@ class CsvTradeParserTest {
                 new PrintStream(new ByteArrayOutputStream()), error);
 
         assertEquals(1, exitCode);
-        assertTrue(errorBytes.toString().contains("Could not parse CSV"));
+        assertTrue(errorBytes.toString().contains("Could not read CSV"));
         assertTrue(errorBytes.toString().contains("missing.csv"));
     }
 
