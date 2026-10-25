@@ -4,7 +4,7 @@
 
 Implement the two queries in `CS_E4780_Course_Project_2026.pdf`: five-minute price windows with EMA indicators, followed by buy/sell advisories when those indicators cross. Evaluate correctness, scalability, and resource use. Add visualization after the required processing works.
 
-The repository contains a Java 17 Maven project in `market_evaluator/`, Apache Flink 2.3.0, and a weekday sample dataset in `data/sample-positive-prices-08.csv`. Ingestion and Query 1 are implemented; Query 2 and subscription/file output remain next.
+The repository contains a Java 17 Maven project in `market_evaluator/`, Apache Flink 2.3.0, and a weekday sample dataset in `data/sample-positive-prices-08.csv`. Ingestion, Query 1, Query 2, subscriptions, and structured file output are implemented and tested.
 
 ## Proposed architecture
 
@@ -41,7 +41,7 @@ Completed: See [processing contract](docs/processing-contract.md)
 - Organize code into ingestion, models, processing, output, and configuration packages. Keep the entry point small.
 - Keep full datasets and generated outputs outside Git. Commit only small fixtures that are suitable for redistribution, with attribution where applicable.
 
-Completed prerequisite setup: pinned Flink 2.3.0, runtime logging, JUnit, Maven execution, and configurable input paths/processing parallelism/watermark delay. Part 3 supplies the terminating local Flink job. Output-directory configuration and subscriptions remain with part 4; rate-controlled replay remains optional.
+Completed prerequisite setup: pinned Flink 2.3.0, runtime logging, JUnit, Maven execution, configurable input paths/processing parallelism/watermark delay, and the terminating local Flink job. Query 2 adds output-directory configuration and subscriptions; rate-controlled replay remains optional.
 
 ## 3. Implement ingestion and Query 1
 
@@ -58,14 +58,68 @@ Completed: bounded ordered ingestion, deterministic lateness decisions, incremen
 
 ## 4. Implement Query 2, subscriptions, and output
 
-- Compare current and previous EMA values using the exact crossover inequalities.
-- Emit one advisory per qualifying finalized window, with a deterministic identity based on symbol, window, and direction.
-- Apply subscription filtering after calculating indicators and detecting patterns for all symbols.
-- Begin with a configured subscription list. Add live subscription changes only if needed for the demonstration.
-- Write indicator and advisory records to structured files, including run metadata so outputs from different experiments remain distinguishable.
-- Document output behavior on replay or failure; do not claim exactly-once results without verifying both source and sink guarantees.
+Implement Query 2 from the indicator stream, reusing the EMA state and five-minute
+window decisions from Query 1 rather than calculating a second indicator path.
 
-Completion: both queries match independently calculated fixture expectations, including BUY/SELL and no-signal cases, and changing subscriptions changes published results without changing calculations.
+1. **Define the advisory record and crossover logic.**
+   - Add a structured advisory record containing the complete symbol, window
+     boundaries, direction (`BUY` or `SELL`), and a deterministic identity
+     derived from symbol, window, and direction.
+   - Compare the current EMA pair against the prior pair using the exact
+     inequalities in the [processing contract](docs/processing-contract.md).
+     Compare before updating prior state; equality in the current pair emits no
+     advisory.
+   - Emit at most one advisory for a qualifying finalized populated window.
+     Preserve the contract's first-positive-close behavior and do not generate
+     advisories for empty windows.
+
+2. **Integrate detection with the existing keyed EMA operator.**
+   - Extend the keyed EMA transition to produce the indicator and its optional
+     advisory from the same prior state and finalized close.
+   - Expose both output streams from the pipeline (for example, use a Flink side
+     output for advisories) so indicator and advisory calculations cannot drift.
+   - Keep crossover detection upstream of subscription filtering; all symbols
+     must retain independent EMA state and be evaluated.
+
+3. **Add static subscriptions.**
+   - Add configuration for a set of subscribed full symbol identifiers and
+     validate malformed or duplicate entries consistently with existing CLI
+     configuration.
+   - Filter both published record types only after indicators and advisories
+     have been computed. An omitted subscription list publishes all symbols.
+   - Keep live subscription changes out of the initial scope unless the
+     demonstration requires them.
+
+4. **Add structured output and run behavior.**
+   - Add output-directory configuration and write indicator and advisory
+     records as separate structured files with stable headers and documented
+     field formats. Preserve closing provenance on indicator records.
+   - Include enough run metadata to distinguish outputs from different inputs
+     and settings. Require a new output directory and reject existing paths;
+     stage sibling files and expose the completed directory with an atomic move.
+   - Surface invalid paths and write failures as job failures. Document replay
+     and partial-output behavior, and make no exactly-once claim unless source
+     and sink guarantees are verified.
+   - Update the README with the subscription and output options and examples.
+
+5. **Verify Query 2 end to end.**
+   - Add independent unit expectations for BUY, SELL, no crossover, current
+     equality, prior equality, first positive close, and consecutive qualifying
+     windows.
+   - Run CSV-to-output fixtures through the Flink pipeline and assert complete
+     indicator/advisory records, including boundaries, direction, provenance,
+     and deterministic identity.
+   - Verify subscribed and unsubscribed symbols: filtering changes published
+     records only, not indicator calculations or subsequent crossover state.
+   - Verify output headers/escaping, empty outputs, and explicit rejection of
+     an existing destination. Document that record order is unspecified.
+
+Completed: BUY/SELL, no-crossing, equality, and first-positive-close behavior
+are tested; subscriptions filter both output types without changing all-symbol
+calculation counts; separate CSV outputs include run metadata and are staged
+until successful completion. End-to-end output and CLI tests pass. Output
+record ordering is explicitly unspecified, and no exactly-once guarantee is
+claimed.
 
 ## 5. Evaluate correctness and performance
 

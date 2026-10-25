@@ -1,8 +1,8 @@
 # MarketEvaluator processing contract
 
-This is the Part 1 contract for ingestion, five-minute closing prices, EMA38,
-EMA100, and crossovers. The Java/Flink Query 1 processor implements ingestion, closing prices, and EMAs.
-Crossover detection and subscription filtering remain for part 4.
+This contract covers ingestion, five-minute closing prices, EMA38/EMA100,
+crossovers, and subscription filtering. The Java/Flink pipeline implements
+these semantics and provides optional structured output files.
 
 ## Requirements and chosen interpretations
 
@@ -165,10 +165,30 @@ Empty intervals preserve both state values and produce no comparison.
 Compute and detect for all symbols; subscriptions only filter published records.
 
 Query 1 tests assert symbol, window boundaries, closing price, both EMAs, and
-closing provenance directly; CLI tests also verify offset-qualified formatting.
-Advisory tests belong to part 4. Expected-result JSON files are not retained. Indicator verification permits absolute or relative error
+closing provenance directly; Query 2 tests assert exact crossover directions
+and advisory identities. Expected-result JSON files are not retained. Indicator verification permits absolute or relative error
 `1e-9`: `abs(actual - expected) <= max(1e-9, 1e-9 * abs(expected))`.
 This tolerance never changes crossover inequalities or advisory expectations.
+
+Subscriptions are a publication filter only. By default all symbols are
+published; repeated `--subscribe FULL_SYMBOL` options select an allowlist.
+The allowlist applies to both indicators and advisories after EMA state and
+crossover calculations have run for every symbol. Live subscription changes
+are not supported.
+
+By default, indicator CSV rows and `ADVISORY`-prefixed advisory CSV rows are
+written to stdout. `--output-dir DIR` instead writes `indicators.csv`,
+`advisories.csv`, and `run-metadata.csv` under a newly created run directory.
+The directory must not already exist. Files include stable headers; timestamps
+use UTC+02:00. Metadata includes the run ID, start time, input paths, settings,
+subscription selection, processing counters, and published record counts.
+Record order is not guaranteed when processing in parallel.
+
+File output is staged in a temporary sibling directory and atomically moved to
+the requested path only after successful processing. Existing destinations
+are rejected, not overwritten. A failed run does not expose completed output,
+although a process crash may leave the hidden staging directory. This bounded
+source/client-collection output path has no verified exactly-once guarantee.
 
 ## Query 1 implementation
 
@@ -182,13 +202,15 @@ No empty windows are generated. EMA state persists across gaps and day boundarie
 Records use primitive epoch microseconds for closing order and epoch milliseconds
 for Flink window timers; output is rendered at fixed `+02:00`.
 
-The CLI consumes indicators incrementally and reports Flink accumulators after
-successful completion. It owns the local MiniCluster lifecycle: completion does
-not stop the cluster until result collection, counter retrieval, and iterator
-cleanup are finished. Failure paths also close the cluster. Per-file parser summaries contribute counts without
-creating event-time progress. Automatic restart and checkpoint recovery are
-disabled. Results printed before a failure are partial, and replay prints results
-again; stdout has no exactly-once publication guarantee.
+The CLI consumes indicators and advisories incrementally and reports Flink
+accumulators after successful completion. It owns the local MiniCluster
+lifecycle: completion does not stop the cluster until result collection,
+counter retrieval, and iterator cleanup are finished. Failure paths also close
+the cluster. Per-file parser summaries contribute counts without creating
+event-time progress. Automatic restart and checkpoint recovery are disabled.
+Results printed to stdout before a failure are partial, and replay prints
+results again; stdout has no exactly-once publication guarantee. File output is
+staged and published only after successful completion.
 
 No standalone sequential reference calculator is present in this checkout.
 Tests use independent fixture arithmetic and a sample-specific independent scan.

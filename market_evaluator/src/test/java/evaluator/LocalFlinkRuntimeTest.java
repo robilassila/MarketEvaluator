@@ -69,7 +69,7 @@ class LocalFlinkRuntimeTest {
         Path malformed = temp.resolve("malformed.csv");
         Files.writeString(malformed, "ID,SecType,Date,Time,Last,Trading date,Trading time\n\"unterminated\n");
         String failure = cli(malformed, temp.resolve("failure.log"), 1);
-        assertTrue(failure.contains("Could not process CSV input"));
+        assertTrue(failure.contains("Could not run evaluation for input"));
         assertTrue(failure.contains("unterminated quoted field"));
         assertFalse(failure.contains("Summary:"));
     }

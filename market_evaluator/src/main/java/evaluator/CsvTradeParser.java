@@ -194,7 +194,7 @@ public final class CsvTradeParser {
 
         String symbol = value(fields, header, "ID");
         String securityType = value(fields, header, "SecType");
-        if (symbol.isEmpty() || EXCHANGES.stream().noneMatch(symbol::endsWith)
+        if (!isValidSymbol(symbol)
                 || !(securityType.equals("E") || securityType.equals("I"))) {
             summary.reject(RejectionReason.IDENTITY);
             return;
@@ -256,6 +256,10 @@ public final class CsvTradeParser {
             double price,
             OffsetDateTime timestamp,
             long sourceLine) {
+    }
+
+    public static boolean isValidSymbol(String symbol) {
+        return symbol != null && !symbol.isEmpty() && EXCHANGES.stream().anyMatch(symbol::endsWith);
     }
 
     public record ParseSummary(
