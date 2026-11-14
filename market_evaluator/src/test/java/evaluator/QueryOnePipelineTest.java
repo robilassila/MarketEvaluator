@@ -8,7 +8,6 @@ import evaluator.model.PriceEvent;
 import evaluator.processing.ClosingPriceAggregate;
 import evaluator.processing.EmaFunction;
 import evaluator.processing.QueryOnePipeline;
-import evaluator.processing.WindowTimes;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.file.Files;
@@ -34,7 +33,7 @@ class QueryOnePipelineTest {
     private static final Path FIXTURES = Path.of("src/test/resources/fixtures");
     private static final String HEADER = "ID,SecType,Date,Time,Last,Trading date,Trading time\n";
 
-    record Run(List<IndicatorRecord> records, Map<String, Object> counts) { }
+    record Run(List<IndicatorRecord> records) { }
 
     static Run run(JobConfig config) throws Exception {
         try (var runtime = new LocalFlinkRuntime()) {
@@ -48,15 +47,15 @@ class QueryOnePipelineTest {
             try (var iterator = collector.getOutput()) {
                 List<IndicatorRecord> records = new ArrayList<>();
                 iterator.forEachRemaining(records::add);
-                var result = job.getJobExecutionResult().get();
+                job.getJobExecutionResult().get();
                 records.sort(Comparator.comparingLong((IndicatorRecord r) -> r.windowStart).thenComparing(r -> r.symbol));
-                return new Run(records, result.getAllAccumulatorResults());
+                return new Run(records);
             }
         }
     }
 
-    static Run run(Path input, int parallelism, long delay) throws Exception {
-        return run(new JobConfig(List.of(input.toAbsolutePath().toString()), parallelism, delay));
+    static Run run(Path input, int parallelism) throws Exception {
+        return run(new JobConfig(List.of(input.toAbsolutePath().toString()), parallelism));
     }
 
     static void near(double expected, double actual) {
@@ -79,35 +78,21 @@ class QueryOnePipelineTest {
         near(ema100, actual.ema100);
     }
 
-    @Test void orderingFixtureMatchesIndependentExpectations() throws Exception {
-        Run result = run(FIXTURES.resolve("window-ordering.csv"), 1, 65_000);
+    /** Line 11 (09:05:00) starts the next window, so line 12 (09:04:59.900) arrives late. */
+    @Test void orderingFixtureFinalizesAtNextWindowStart() throws Exception {
+        Run result = run(FIXTURES.resolve("window-ordering.csv"), 1);
         assertEquals(4, result.records.size());
         String start = "2021-11-08T09:00:00+02:00";
         record(result.records.get(0), "INDEX.ETR", start, 20, 10, 0,
                 "2021-11-08T09:00:40+02:00", 40.0 / 39, 40.0 / 101);
-        record(result.records.get(1), "SAME.FR", start, 13, 12, 0,
-                "2021-11-08T09:04:59.900+02:00", 26.0 / 39, 26.0 / 101);
+        record(result.records.get(1), "SAME.FR", start, 12, 8, 0,
+                "2021-11-08T09:04:59.900+02:00", 24.0 / 39, 24.0 / 101);
         record(result.records.get(2), "SAME.NL", start, 30, 9, 0,
                 "2021-11-08T09:00:30+02:00", 60.0 / 39, 60.0 / 101);
         record(result.records.get(3), "SAME.FR", "2021-11-08T09:05:00+02:00", 15, 13, 0,
                 "2021-11-08T09:05:00+02:00",
-                30.0 / 39 + 26.0 / 39 * 37.0 / 39,
-                30.0 / 101 + 26.0 / 101 * 99.0 / 101);
-        assertEquals(10L, result.counts.get("parser_accepted"));
-        assertEquals(10L, result.counts.get("accepted"));
-        assertEquals(0L, result.counts.get("late"));
-        assertEquals(4L, result.counts.get("indicators"));
-    }
-
-    @Test void zeroDelayFinalizesAtExactBoundary() throws Exception {
-        JobConfig config = JobConfig.parse(new String[]{FIXTURES.resolve("window-ordering.csv").toString()});
-        assertEquals(0L, config.watermarkDelayMs());
-        Run result = run(config);
-        assertEquals(4, result.records.size());
-        record(result.records.get(1), "SAME.FR", "2021-11-08T09:00:00+02:00", 12, 8, 0,
-                "2021-11-08T09:04:59.900+02:00", 24.0 / 39, 24.0 / 101);
-        assertEquals(9L, result.counts.get("accepted"));
-        assertEquals(1L, result.counts.get("late"));
+                30.0 / 39 + 24.0 / 39 * 37.0 / 39,
+                30.0 / 101 + 24.0 / 101 * 99.0 / 101);
     }
 
     @Test void zeroAndNonPriceRowsCannotAdvanceTimeOrCreateState(@TempDir Path temp) throws Exception {
@@ -120,14 +105,10 @@ class QueryOnePipelineTest {
                 PRICE.FR,E,08-11-2021,,20,08-11-2021,09:04:59.999999
                 PRICE.FR,E,08-11-2021,,-0.0,08-11-2021,23:59:59
                 """);
-        Run result = run(input, 1, 0);
+        Run result = run(input, 1);
         assertEquals(1, result.records.size());
         record(result.records.get(0), "PRICE.FR", "2021-11-08T09:00:00+02:00", 20, 6, 0,
                 "2021-11-08T09:04:59.999999+02:00", 40.0 / 39, 40.0 / 101);
-        assertEquals(3L, result.counts.get("ignored_zero"));
-        assertEquals(1L, result.counts.get("non_price"));
-        assertEquals(0L, result.counts.get("late"));
-        assertEquals(0L, result.counts.get("rejected_event_timestamp"));
     }
 
     @Test void globalCutoffMicrosecondsGapsAndParallelismMatchIndependentRecords(@TempDir Path temp) throws Exception {
@@ -144,7 +125,7 @@ class QueryOnePipelineTest {
                 SAME.FR,E,09-11-2021,,26,09-11-2021,00:00:00
                 """);
         for (int parallelism : new int[]{1, 2, 4}) {
-            Run result = run(input, parallelism, 65_000);
+            Run result = run(input, parallelism);
             assertEquals(5, result.records.size());
             record(result.records.get(0), "SAME.FR", "2021-11-08T09:00:00+02:00", 13, 5, 0,
                     "2021-11-08T09:00:00.000002+02:00", 26.0 / 39, 26.0 / 101);
@@ -158,21 +139,18 @@ class QueryOnePipelineTest {
             record(result.records.get(4), "SAME.FR", "2021-11-09T00:00:00+02:00", 26, 10, 0,
                     "2021-11-09T00:00:00+02:00",
                     52.0 / 39 + 26.0 / 39 * 37.0 / 39, 52.0 / 101 + 26.0 / 101 * 99.0 / 101);
-            assertEquals(9L, result.counts.get("parser_accepted"));
-            assertEquals(8L, result.counts.get("accepted"));
-            assertEquals(1L, result.counts.get("late"));
-            assertEquals(5L, result.counts.get("indicators"));
         }
     }
 
-    @Test void sortsDailyFilesAndUsesFileOrdinalForTies(@TempDir Path temp) throws Exception {
-        Path later = temp.resolve("a-next.csv");
-        Path first = temp.resolve("b-first.csv");
-        Path tied = temp.resolve("c-tied.csv");
+    @Test void sortsDailyFilesByNameAndUsesFileOrdinalForTies(@TempDir Path temp) throws Exception {
+        Path later = temp.resolve("day-09.csv");
+        Path first = temp.resolve("day-08-a.csv");
+        Path tied = temp.resolve("day-08-b.csv");
         Files.writeString(later, HEADER + "SAME.FR,E,09-11-2021,,20,09-11-2021,09:00:00\n");
         Files.writeString(first, HEADER + "SAME.FR,E,08-11-2021,,10,08-11-2021,09:00:00\n");
         Files.writeString(tied, HEADER + "SAME.FR,E,08-11-2021,,15,08-11-2021,09:00:00\n");
-        JobConfig config = JobConfig.parse(new String[]{later.toString(), tied.toString(), first.toString()});
+        JobConfig config = JobConfig.parse(new String[]{"--output-dir", temp.resolve("out").toString(),
+                later.toString(), tied.toString(), first.toString()});
         assertEquals(List.of(first.toString(), tied.toString(), later.toString()), config.inputs());
         Run result = run(config);
         assertEquals(2, result.records.size());
@@ -183,26 +161,14 @@ class QueryOnePipelineTest {
                 40.0 / 39 + 30.0 / 39 * 37.0 / 39, 40.0 / 101 + 30.0 / 101 * 99.0 / 101);
     }
 
-    @Test void headerOnlyFileCompletesWithZeroCounts(@TempDir Path temp) throws Exception {
+    @Test void headerOnlyFileCompletesWithoutIndicators(@TempDir Path temp) throws Exception {
         Path input = temp.resolve("empty.csv");
         Files.writeString(input, HEADER);
-        Run result = run(input, 1, 65_000);
+        Run result = run(input, 1);
         assertTrue(result.records.isEmpty());
-        assertEquals(0L, result.counts.get("accepted"));
-        assertEquals(0L, result.counts.get("indicators"));
-        assertThrows(java.io.IOException.class,
-                () -> JobConfig.parse(new String[]{input.toString(), FIXTURES.resolve("window-ordering.csv").toString()}));
     }
 
-    @Test void validationSummariesPassThroughWithoutBecomingEvents() throws Exception {
-        Run result = run(FIXTURES.resolve("special-price-literals.csv"), 1, 65_000);
-        assertEquals(1, result.records.size());
-        assertEquals(1L, result.counts.get("parser_accepted"));
-        assertEquals(1L, result.counts.get("non_price"));
-        assertEquals(3L, result.counts.get("rejected_price"));
-    }
-
-    @Test void everyRowValidationReasonAppearsInFinalCounters(@TempDir Path temp) throws Exception {
+    @Test void invalidRowsProduceNoIndicators(@TempDir Path temp) throws Exception {
         Path input = temp.resolve("validation.csv");
         Files.writeString(input, HEADER + """
                 SHORT.FR,E
@@ -213,35 +179,32 @@ class QueryOnePipelineTest {
                 ZERO.FR,E,,,0,invalid,invalid
                 VALID.FR,E,invalid,,10,08-11-2021,09:00:00
                 """);
-        Run result = run(input, 1, 65_000);
+        Run result = run(input, 1);
         assertEquals(1, result.records.size());
-        for (String name : List.of("parser_accepted", "accepted", "non_price", "ignored_zero",
-                "rejected_shape", "rejected_identity", "rejected_price", "rejected_event_timestamp", "indicators")) {
-            assertEquals(1L, result.counts.get(name), name);
-        }
-        assertEquals(0L, result.counts.get("late"));
+        assertEquals("VALID.FR", result.records.get(0).symbol);
     }
 
     @Test void noHeaderAndMalformedCsvFailTheActualJob(@TempDir Path temp) throws Exception {
         Path input = temp.resolve("broken.csv");
         Files.writeString(input, "# no records\n");
-        assertThrows(Exception.class, () -> run(input, 1, 65_000));
+        assertThrows(Exception.class, () -> run(input, 1));
         Files.writeString(input, "ID,SecType\nSAME.FR,E\n");
-        assertThrows(Exception.class, () -> run(input, 1, 65_000));
+        assertThrows(Exception.class, () -> run(input, 1));
         Files.writeString(input, HEADER + "\"unterminated\n");
-        assertThrows(Exception.class, () -> run(input, 1, 65_000));
+        assertThrows(Exception.class, () -> run(input, 1));
     }
 
-    @Test void cliPrintsIndicatorsAndFinalSummary() {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
+    @Test void cliWritesIndicators(@TempDir Path temp) throws Exception {
         ByteArrayOutputStream errors = new ByteArrayOutputStream();
-        assertEquals(0, Main.run(new String[]{FIXTURES.resolve("window-ordering.csv").toString()},
-                new PrintStream(output), new PrintStream(errors)), errors.toString());
-        assertTrue(output.toString().startsWith("symbol,window_start,window_end,close,ema38,ema100"));
-        assertTrue(output.toString().contains("SAME.FR,2021-11-08T09:00+02:00,2021-11-08T09:05+02:00,12.0"));
-        assertTrue(output.toString().contains("indicators=4"));
-        assertTrue(output.toString().contains("parser_accepted=10"));
-        assertFalse(output.toString().contains("dataStreamCollect_"));
+        Path output = temp.resolve("out");
+        assertEquals(0, Main.run(new String[]{"--output-dir", output.toString(),
+                FIXTURES.resolve("window-ordering.csv").toString()},
+                new PrintStream(new ByteArrayOutputStream()), new PrintStream(errors)), errors.toString());
+        List<String> lines = Files.readAllLines(output.resolve("indicators.csv"));
+        assertTrue(lines.get(0).startsWith("symbol,window_start,window_end,close,ema38,ema100"));
+        assertTrue(lines.stream().anyMatch(
+                line -> line.startsWith("SAME.FR,2021-11-08T09:00+02:00,2021-11-08T09:05+02:00,12.0,")));
+        assertEquals(5, lines.size());
         assertEquals("", errors.toString());
     }
 
@@ -278,7 +241,7 @@ class QueryOnePipelineTest {
                 long micros = time.toEpochSecond() * 1_000_000L + time.getNano() / 1000;
                 long eventMs = Math.floorDiv(micros, 1000);
                 long start = Math.floorDiv(eventMs, 300_000) * 300_000;
-                if (highWater != Long.MIN_VALUE && start + 300_000 <= highWater - 65_000) {
+                if (highWater != Long.MIN_VALUE && start + 300_000 <= highWater) {
                     late++;
                     continue;
                 }
@@ -309,7 +272,7 @@ class QueryOnePipelineTest {
         assertEquals(1_263, expected.size());
         assertEquals(1_227, previous.size());
         for (int parallelism : new int[]{1, 2, 4}) {
-            Run result = run(sample, parallelism, 65_000);
+            Run result = run(sample, parallelism);
             assertEquals(expected.size(), result.records.size());
             for (int i = 0; i < expected.size(); i++) {
                 Expected oracle = expected.get(i);
@@ -324,10 +287,6 @@ class QueryOnePipelineTest {
                 near(oracle.ema38, actual.ema38);
                 near(oracle.ema100, actual.ema100);
             }
-            assertEquals(parsed, result.counts.get("parser_accepted"));
-            assertEquals(parsed - late, result.counts.get("accepted"));
-            assertEquals(late, result.counts.get("late"));
-            assertEquals(1_263L, result.counts.get("indicators"));
         }
         // Independently recorded four-window sequence provides stable, explicit sample checks.
         List<Expected> selected = expected.stream().filter(r -> r.close.symbol.equals("IEBBB.FR")).toList();
@@ -342,19 +301,14 @@ class QueryOnePipelineTest {
         }
     }
 
-    @Test void configurationRejectsInvalidOptionsAndDuplicates() {
+    @Test void configurationRejectsInvalidOptions() {
         for (String[] args : List.of(new String[0], new String[]{"--parallelism"},
-                new String[]{"--parallelism", "0", "file.csv"},
-                new String[]{"--watermark-delay-ms", "-1", "file.csv"},
-                new String[]{"--unknown", "file.csv"}, new String[]{"file.csv", "./file.csv"})) {
+                new String[]{"--parallelism", "0", "--output-dir", "out", "file.csv"},
+                new String[]{"--watermark-delay-ms", "0", "--output-dir", "out", "file.csv"},
+                new String[]{"--unknown", "--output-dir", "out", "file.csv"},
+                new String[]{"file.csv"})) {
             assertThrows(IllegalArgumentException.class, () -> JobConfig.parse(args));
         }
-    }
-
-    @Test void configurationAllowsAnExplicitWatermarkDelay() throws Exception {
-        JobConfig config = JobConfig.parse(new String[]{"--watermark-delay-ms", "65000",
-                FIXTURES.resolve("window-ordering.csv").toString()});
-        assertEquals(65_000L, config.watermarkDelayMs());
     }
 
     @Test void incrementalAggregateAndTimeModelsUseExplicitTypes() {
@@ -368,10 +322,6 @@ class QueryOnePipelineTest {
         assertSame(first, aggregate.add(first, aggregate.createAccumulator()));
         assertSame(next, aggregate.add(next, first));
         assertSame(next, aggregate.merge(first, next));
-        assertEquals(-300_000, WindowTimes.start(-1));
-        assertEquals(0, WindowTimes.start(299_999));
-        assertEquals(300_000, WindowTimes.start(300_000));
-        assertEquals(Long.MIN_VALUE, WindowTimes.cutoff(-1, Long.MAX_VALUE));
         near(20.0 / 39 + 2.0 * 37.0 / 39, EmaFunction.update(10, 2, 38));
     }
 }

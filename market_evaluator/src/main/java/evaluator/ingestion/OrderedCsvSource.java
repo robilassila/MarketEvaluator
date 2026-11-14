@@ -23,7 +23,7 @@ import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 
 /** One split contains the complete ordered manifest; files never replay concurrently. */
-public final class OrderedCsvSource implements Source<SourceMessage, OrderedCsvSource.ReplaySplit, Boolean> {
+public final class OrderedCsvSource implements Source<PriceEvent, OrderedCsvSource.ReplaySplit, Boolean> {
     private final List<String> paths;
 
     public OrderedCsvSource(List<String> paths) {
@@ -37,7 +37,7 @@ public final class OrderedCsvSource implements Source<SourceMessage, OrderedCsvS
     @Override public Boundedness getBoundedness() { return Boundedness.BOUNDED; }
 
     @Override
-    public SourceReader<SourceMessage, ReplaySplit> createReader(SourceReaderContext context) {
+    public SourceReader<PriceEvent, ReplaySplit> createReader(SourceReaderContext context) {
         return new Reader(context);
     }
 
@@ -113,7 +113,7 @@ public final class OrderedCsvSource implements Source<SourceMessage, OrderedCsvS
         };
     }
 
-    private static final class Reader implements SourceReader<SourceMessage, ReplaySplit> {
+    private static final class Reader implements SourceReader<PriceEvent, ReplaySplit> {
         private final SourceReaderContext context;
         private final CsvTradeParser parser = new CsvTradeParser();
         private final CompletableFuture<Void> available = new CompletableFuture<>();
@@ -126,24 +126,23 @@ public final class OrderedCsvSource implements Source<SourceMessage, OrderedCsvS
         @Override public void start() { context.sendSplitRequest(); }
 
         @Override
-        public InputStatus pollNext(ReaderOutput<SourceMessage> output) throws IOException {
+        public InputStatus pollNext(ReaderOutput<PriceEvent> output) throws IOException {
             if (paths == null) {
                 return noMoreSplits ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
             }
             if (fileOrdinal >= paths.size()) { return InputStatus.END_OF_INPUT; }
             if (reader == null) { reader = parser.open(Path.of(paths.get(fileOrdinal))); }
-            // Bound mailbox work even when many rows are ignored or rejected.
+            // Bound mailbox work even when many rows produce no event.
             for (int i = 0; i < 128; i++) {
                 CsvTradeParser.ParsedRow row = reader.nextRow();
                 if (row == null) {
-                    output.collect(SourceMessage.summary(reader.summary()));
                     reader.close();
                     reader = null;
                     fileOrdinal++;
                     return InputStatus.MORE_AVAILABLE;
                 }
                 if (row.event() != null) {
-                    output.collect(SourceMessage.event(PriceEvent.from(row.event(), fileOrdinal)));
+                    output.collect(PriceEvent.from(row.event(), fileOrdinal));
                 }
             }
             return InputStatus.MORE_AVAILABLE;

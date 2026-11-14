@@ -6,6 +6,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
@@ -16,8 +17,7 @@ import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoField;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.EnumMap;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -32,7 +32,6 @@ import java.util.function.Consumer;
 public final class CsvTradeParser {
     private static final Set<String> REQUIRED_HEADERS = Set.of(
             "ID", "SecType", "Date", "Time", "Last", "Trading date", "Trading time");
-    private static final Set<String> EXCHANGES = Set.of(".FR", ".NL", ".ETR");
     private static final ZoneOffset EVENT_OFFSET = ZoneOffset.ofHours(2);
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter
             .ofPattern("dd-MM-uuuu", Locale.ROOT)
@@ -44,6 +43,7 @@ public final class CsvTradeParser {
             .optionalEnd()
             .toFormatter(Locale.ROOT)
             .withResolverStyle(ResolverStyle.STRICT);
+    private static final ParsedRow NO_EVENT = new ParsedRow(null);
 
     public static void printEventColumnMeanings(PrintStream output) {
         Objects.requireNonNull(output, "output");
@@ -56,7 +56,7 @@ public final class CsvTradeParser {
         output.println();
     }
 
-    public ParseSummary parse(Path path, Consumer<TradeEvent> eventConsumer) throws IOException {
+    public void parse(Path path, Consumer<TradeEvent> eventConsumer) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(eventConsumer, "eventConsumer");
 
@@ -67,7 +67,6 @@ public final class CsvTradeParser {
                     eventConsumer.accept(row.event());
                 }
             }
-            return reader.summary();
         }
     }
 
@@ -75,38 +74,21 @@ public final class CsvTradeParser {
         return new RecordReader(path);
     }
 
-    /** The system date identifies a daily file; it does not change event-time validation. */
-    public LocalDate discoverDate(Path path) throws IOException {
-        try (RecordReader reader = open(path)) {
-            CsvRecord record;
-            while ((record = reader.nextRecord()) != null) {
-                try {
-                    return LocalDate.parse(value(record.fields(), reader.header, "Date"), DATE_FORMAT);
-                } catch (DateTimeParseException ignored) {
-                    // Keep scanning until a usable system date is encountered.
-                }
-            }
-        }
-        throw new IOException(path + ": no valid system Date for daily-file ordering");
-    }
-
     public record ParsedRow(TradeEvent event) { }
 
-    /** Reads at most one logical data record per call, preserving physical provenance. */
+    /** Reads at most one data record (one physical line) per call, preserving its line number. */
     public static final class RecordReader implements AutoCloseable {
+        private final Path path;
         private final BufferedReader reader;
-        private final CsvState state;
-        private final CsvRecord[] ready = new CsvRecord[1];
-        private final MutableSummary summary = new MutableSummary();
+        private final LineFields lineFields = new LineFields();
         private final Header header;
         private long lineNumber;
-        private boolean finished;
 
         private RecordReader(Path path) throws IOException {
+            this.path = path;
             reader = Files.newBufferedReader(path, StandardCharsets.UTF_8);
-            state = new CsvState(path, record -> ready[0] = record);
             try {
-                CsvRecord first = nextRecord();
+                LineFields first = nextRecord();
                 if (first == null) {
                     throw new IOException(path + ": CSV has no header record");
                 }
@@ -117,36 +99,31 @@ public final class CsvTradeParser {
             }
         }
 
-        private CsvRecord nextRecord() throws IOException {
-            if (finished) {
-                return null;
-            }
+        /** The returned fields are only valid until the next call. */
+        private LineFields nextRecord() throws IOException {
             String line;
             while ((line = reader.readLine()) != null) {
-                state.acceptLine(line, ++lineNumber);
-                if (ready[0] != null) {
-                    CsvRecord record = ready[0];
-                    ready[0] = null;
-                    return record;
+                ++lineNumber;
+                if (line.isBlank() || line.startsWith("#")) {
+                    continue;
                 }
+                if (line.indexOf('"') >= 0) {
+                    throw new IOException(path + ":" + lineNumber
+                            + ": quoted CSV fields are not supported");
+                }
+                lineFields.load(line, lineNumber);
+                return lineFields;
             }
-            state.finish();
-            finished = true;
             return null;
         }
 
         public ParsedRow nextRow() throws IOException {
-            CsvRecord record = nextRecord();
+            LineFields record = nextRecord();
             if (record == null) {
                 return null;
             }
-            TradeEvent[] event = new TradeEvent[1];
-            processRow(record, header, value -> event[0] = value, summary);
-            return new ParsedRow(event[0]);
-        }
-
-        public ParseSummary summary() {
-            return summary.toImmutable();
+            TradeEvent event = processRow(record, header);
+            return event == null ? NO_EVENT : new ParsedRow(event);
         }
 
         @Override
@@ -155,9 +132,12 @@ public final class CsvTradeParser {
         }
     }
 
-    private static Header validateHeader(Path path, CsvRecord record) throws IOException {
-        List<String> names = new ArrayList<>(record.fields());
-        if (!names.isEmpty() && names.get(0).startsWith("\uFEFF")) {
+    private static Header validateHeader(Path path, LineFields record) throws IOException {
+        List<String> names = new ArrayList<>(record.size());
+        for (int i = 0; i < record.size(); i++) {
+            names.add(record.get(i));
+        }
+        if (!names.isEmpty() && names.get(0).startsWith("﻿")) {
             names.set(0, names.get(0).substring(1));
         }
         Map<String, Integer> indexes = new HashMap<>();
@@ -176,78 +156,128 @@ public final class CsvTradeParser {
                         + ": missing required header '" + required + "'");
             }
         }
-        return new Header(names.size(), indexes);
+        return new Header(
+                names.size(),
+                indexes.get("ID"),
+                indexes.get("SecType"),
+                indexes.get("Date"),
+                indexes.get("Last"),
+                indexes.get("Trading date"),
+                indexes.get("Trading time"));
     }
 
-    private static void processRow(
-            CsvRecord record,
-            Header header,
-            Consumer<TradeEvent> eventConsumer,
-            MutableSummary summary) {
-        List<String> fields = record.fields();
-        if (fields.size() < header.width()
-                || fields.size() > header.width()
-                && fields.subList(header.width(), fields.size()).stream().anyMatch(value -> !value.isEmpty())) {
-            summary.reject(RejectionReason.SHAPE);
-            return;
+    /** Returns the row's positive-price event, or null if the row is invalid or has no positive price. */
+    private static TradeEvent processRow(LineFields fields, Header header) {
+        if (fields.size() < header.width() || hasNonBlankExcess(fields, header.width())) {
+            return null;
         }
 
-        String symbol = value(fields, header, "ID");
-        String securityType = value(fields, header, "SecType");
+        String symbol = fields.get(header.id());
+        String securityType = fields.get(header.securityType());
         if (!isValidSymbol(symbol)
                 || !(securityType.equals("E") || securityType.equals("I"))) {
-            summary.reject(RejectionReason.IDENTITY);
-            return;
+            return null;
         }
 
-        String priceText = value(fields, header, "Last");
-        if (priceText.isEmpty()) {
-            summary.nonPrice++;
-            return;
+        // Most rows have no price; skip them before parseDouble would throw for each one.
+        if (fields.isBlank(header.last())) {
+            return null;
         }
 
         final double price;
         try {
-            price = Double.parseDouble(priceText);
+            price = Double.parseDouble(fields.get(header.last()));
         } catch (NumberFormatException exception) {
-            summary.reject(RejectionReason.PRICE);
-            return;
+            return null;
         }
-        if (!Double.isFinite(price) || price < 0.0) {
-            summary.reject(RejectionReason.PRICE);
-            return;
-        }
-        if (price == 0.0) {
-            summary.ignoredZero++;
-            return;
+        if (!Double.isFinite(price) || price <= 0.0) {
+            return null;
         }
 
-        String eventDateText = value(fields, header, "Trading date");
+        String eventDateText = fields.get(header.tradingDate());
         if (eventDateText.isEmpty()) {
-            eventDateText = value(fields, header, "Date");
+            eventDateText = fields.get(header.date());
         }
-        String eventTimeText = value(fields, header, "Trading time");
+        String eventTimeText = fields.get(header.tradingTime());
 
+        if (eventDateText.isEmpty() || eventTimeText.isEmpty()) {
+            return null;
+        }
         final OffsetDateTime timestamp;
         try {
-            if (eventDateText.isEmpty() || eventTimeText.isEmpty()) {
-                throw new DateTimeParseException("Missing event date or time", "", 0);
-            }
-            LocalDate date = LocalDate.parse(eventDateText, DATE_FORMAT);
-            LocalTime time = LocalTime.parse(eventTimeText, TIME_FORMAT);
-            timestamp = OffsetDateTime.of(date, time, EVENT_OFFSET);
+            timestamp = OffsetDateTime.of(parseDate(eventDateText), parseTime(eventTimeText), EVENT_OFFSET);
         } catch (DateTimeParseException exception) {
-            summary.reject(RejectionReason.EVENT_TIMESTAMP);
-            return;
+            return null;
         }
 
-        eventConsumer.accept(new TradeEvent(symbol, securityType, price, timestamp, record.startLine()));
-        summary.acceptedPriceEvents++;
+        return new TradeEvent(symbol, securityType, price, timestamp, fields.startLine());
     }
 
-    private static String value(List<String> fields, Header header, String name) {
-        int index = header.indexes().get(name);
-        return index < fields.size() ? fields.get(index) : "";
+    private static boolean hasNonBlankExcess(LineFields fields, int width) {
+        for (int i = width; i < fields.size(); i++) {
+            if (!fields.isBlank(i)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Parses the common {@code dd-MM-uuuu} shape directly. Anything else, including values the
+     * direct path cannot vouch for, goes through the strict formatter so semantics stay identical.
+     */
+    private static LocalDate parseDate(String text) {
+        if (text.length() == 10 && text.charAt(2) == '-' && text.charAt(5) == '-') {
+            int day = digits(text, 0, 2);
+            int month = digits(text, 3, 5);
+            int year = digits(text, 6, 10);
+            if (day >= 0 && month >= 0 && year >= 0) {
+                try {
+                    return LocalDate.of(year, month, day);
+                } catch (DateTimeException ignored) {
+                    // The formatter produces the authoritative rejection.
+                }
+            }
+        }
+        return LocalDate.parse(text, DATE_FORMAT);
+    }
+
+    /** Same fallback rule as {@link #parseDate} for {@code HH:mm:ss[.f{1,6}]}. */
+    private static LocalTime parseTime(String text) {
+        int length = text.length();
+        boolean shaped = (length == 8 || length >= 10 && length <= 15 && text.charAt(8) == '.')
+                && text.charAt(2) == ':' && text.charAt(5) == ':';
+        if (shaped) {
+            int hour = digits(text, 0, 2);
+            int minute = digits(text, 3, 5);
+            int second = digits(text, 6, 8);
+            int fraction = length == 8 ? 0 : digits(text, 9, length);
+            if (hour >= 0 && minute >= 0 && second >= 0 && fraction >= 0) {
+                int nanos = fraction;
+                for (int scale = length == 8 ? 9 : length - 9; scale < 9; scale++) {
+                    nanos *= 10;
+                }
+                try {
+                    return LocalTime.of(hour, minute, second, nanos);
+                } catch (DateTimeException ignored) {
+                    // The formatter produces the authoritative rejection.
+                }
+            }
+        }
+        return LocalTime.parse(text, TIME_FORMAT);
+    }
+
+    /** Returns the ASCII decimal value of {@code text[from, to)}, or -1 if any character is not a digit. */
+    private static int digits(String text, int from, int to) {
+        int value = 0;
+        for (int i = from; i < to; i++) {
+            char character = text.charAt(i);
+            if (character < '0' || character > '9') {
+                return -1;
+            }
+            value = value * 10 + (character - '0');
+        }
+        return value;
     }
 
     public record TradeEvent(
@@ -259,160 +289,69 @@ public final class CsvTradeParser {
     }
 
     public static boolean isValidSymbol(String symbol) {
-        return symbol != null && !symbol.isEmpty() && EXCHANGES.stream().anyMatch(symbol::endsWith);
+        return symbol != null && !symbol.isEmpty()
+                && (symbol.endsWith(".FR") || symbol.endsWith(".NL") || symbol.endsWith(".ETR"));
     }
 
-    public record ParseSummary(
-            long acceptedPriceEvents,
-            long nonPrice,
-            long ignoredZero,
-            Map<RejectionReason, Long> rejectedRows) {
-        public ParseSummary {
-            EnumMap<RejectionReason, Long> copy = new EnumMap<>(RejectionReason.class);
-            copy.putAll(rejectedRows);
-            rejectedRows = Collections.unmodifiableMap(copy);
-        }
-
-        public long rejected(RejectionReason reason) {
-            return rejectedRows.getOrDefault(reason, 0L);
-        }
-    }
-
-    public enum RejectionReason {
-        SHAPE,
-        IDENTITY,
-        PRICE,
-        EVENT_TIMESTAMP
-    }
-
-    @FunctionalInterface
-    private interface CsvRecordConsumer {
-        void accept(CsvRecord record) throws IOException;
-    }
-
-    private record CsvRecord(List<String> fields, long startLine) {
-    }
-
-    private record Header(int width, Map<String, Integer> indexes) {
-    }
-
-    private static final class MutableSummary {
-        private long acceptedPriceEvents;
-        private long nonPrice;
-        private long ignoredZero;
-        private final EnumMap<RejectionReason, Long> rejected = new EnumMap<>(RejectionReason.class);
-
-        private void reject(RejectionReason reason) {
-            rejected.merge(reason, 1L, Long::sum);
-        }
-
-        private ParseSummary toImmutable() {
-            return new ParseSummary(acceptedPriceEvents, nonPrice, ignoredZero, rejected);
-        }
-    }
-
-    private static final class CsvState {
-        private final Path path;
-        private final CsvRecordConsumer consumer;
-        private final List<String> fields = new ArrayList<>();
-        private final StringBuilder field = new StringBuilder();
-        private CsvFieldState fieldState = CsvFieldState.START;
-        private boolean active;
+    /**
+     * Reusable view over one unquoted CSV line. Stores raw field boundaries and only strips and
+     * creates strings for fields that are read.
+     */
+    private static final class LineFields {
+        private String line;
+        private int[] starts = new int[64];
+        private int[] ends = new int[64];
+        private int size;
         private long startLine;
 
-        private CsvState(Path path, CsvRecordConsumer consumer) {
-            this.path = path;
-            this.consumer = consumer;
+        private void load(String line, long lineNumber) {
+            this.line = line;
+            this.startLine = lineNumber;
+            size = 0;
+            int start = 0;
+            while (true) {
+                int comma = line.indexOf(',', start);
+                int end = comma < 0 ? line.length() : comma;
+                add(start, end);
+                if (comma < 0) {
+                    return;
+                }
+                start = comma + 1;
+            }
         }
 
-        private void acceptLine(String line, long lineNumber) throws IOException {
-            if (!active && (line.isBlank() || line.startsWith("#"))) {
-                return;
+        private void add(int start, int end) {
+            if (size == starts.length) {
+                starts = Arrays.copyOf(starts, size * 2);
+                ends = Arrays.copyOf(ends, size * 2);
             }
-            if (!active) {
-                active = true;
-                startLine = lineNumber;
-            }
+            starts[size] = start;
+            ends[size] = end;
+            size++;
+        }
 
-            for (int i = 0; i < line.length(); i++) {
-                char character = line.charAt(i);
-                switch (fieldState) {
-                    case START -> {
-                        if (character == ',') {
-                            finishField();
-                        } else if (character == '"') {
-                            fieldState = CsvFieldState.QUOTED;
-                        } else {
-                            field.append(character);
-                            fieldState = CsvFieldState.UNQUOTED;
-                        }
-                    }
-                    case UNQUOTED -> {
-                        if (character == ',') {
-                            finishField();
-                        } else if (character == '"') {
-                            throw malformed(lineNumber, "quote inside an unquoted field");
-                        } else {
-                            field.append(character);
-                        }
-                    }
-                    case QUOTED -> {
-                        if (character == '"') {
-                            fieldState = CsvFieldState.AFTER_QUOTE;
-                        } else {
-                            field.append(character);
-                        }
-                    }
-                    case AFTER_QUOTE -> {
-                        if (character == '"') {
-                            field.append('"');
-                            fieldState = CsvFieldState.QUOTED;
-                        } else if (character == ',') {
-                            finishField();
-                        } else if (Character.isWhitespace(character)) {
-                            // Surrounding whitespace is stripped from each parsed field.
-                        } else {
-                            throw malformed(lineNumber, "unexpected character after a quoted field");
-                        }
-                    }
+        private int size() { return size; }
+        private String get(int index) { return line.substring(starts[index], ends[index]).strip(); }
+
+        private boolean isBlank(int index) {
+            for (int i = starts[index]; i < ends[index]; i++) {
+                if (!Character.isWhitespace(line.charAt(i))) {
+                    return false;
                 }
             }
-
-            if (fieldState == CsvFieldState.QUOTED) {
-                field.append('\n');
-            } else {
-                finishRecord();
-            }
+            return true;
         }
 
-        private void finishField() {
-            fields.add(field.toString().strip());
-            field.setLength(0);
-            fieldState = CsvFieldState.START;
-        }
-
-        private void finishRecord() throws IOException {
-            finishField();
-            consumer.accept(new CsvRecord(List.copyOf(fields), startLine));
-            fields.clear();
-            active = false;
-        }
-
-        private void finish() throws IOException {
-            if (active) {
-                throw malformed(startLine, "unterminated quoted field");
-            }
-        }
-
-        private IOException malformed(long lineNumber, String message) {
-            return new IOException(path + ":" + lineNumber + ": malformed CSV: " + message);
-        }
+        private long startLine() { return startLine; }
     }
 
-    private enum CsvFieldState {
-        START,
-        UNQUOTED,
-        QUOTED,
-        AFTER_QUOTE
+    private record Header(
+            int width,
+            int id,
+            int securityType,
+            int date,
+            int last,
+            int tradingDate,
+            int tradingTime) {
     }
 }

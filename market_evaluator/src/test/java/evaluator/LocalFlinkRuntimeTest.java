@@ -60,25 +60,22 @@ class LocalFlinkRuntimeTest {
     @Test
     void cliWithWarningsEnabledHasNoShutdownException(@TempDir Path temp) throws Exception {
         Path sample = Path.of("../data/sample-positive-prices-08.csv");
-        String output = cli(sample, temp.resolve("sample.log"), 0);
-        assertTrue(output.contains("indicators=1263"));
-        assertTrue(output.contains("accepted=10000"));
-        assertTrue(output.contains("Summary:"));
-        assertEquals(1263, output.lines().filter(line -> line.matches("^[^,]+,2021-.*")).count());
+        cli(sample, temp.resolve("sample-output"), temp.resolve("sample.log"), 0);
+        assertEquals(1264, Files.readAllLines(temp.resolve("sample-output").resolve("indicators.csv")).size());
 
         Path malformed = temp.resolve("malformed.csv");
         Files.writeString(malformed, "ID,SecType,Date,Time,Last,Trading date,Trading time\n\"unterminated\n");
-        String failure = cli(malformed, temp.resolve("failure.log"), 1);
+        String failure = cli(malformed, temp.resolve("failure-output"), temp.resolve("failure.log"), 1);
         assertTrue(failure.contains("Could not run evaluation for input"));
-        assertTrue(failure.contains("unterminated quoted field"));
-        assertFalse(failure.contains("Summary:"));
+        assertTrue(failure.contains("quoted CSV fields are not supported"));
     }
 
-    private static String cli(Path input, Path log, int expectedExit) throws Exception {
+    private static String cli(Path input, Path outputDirectory, Path log, int expectedExit) throws Exception {
         Process process = new ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
-                "-cp", System.getProperty("java.class.path"), "evaluator.Main", input.toString())
+                "-cp", System.getProperty("java.class.path"), "evaluator.Main",
+                "--output-dir", outputDirectory.toString(), input.toString())
                 .redirectErrorStream(true).redirectOutput(log.toFile()).start();
         try {
             assertTrue(process.waitFor(45, TimeUnit.SECONDS), "CLI did not terminate");

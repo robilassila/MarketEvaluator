@@ -15,6 +15,7 @@
         <flink.version>2.3.0</flink.version>
         <junit.version>5.10.2</junit.version>
         <evaluator.args></evaluator.args>
+        <evaluator.jvmArgs></evaluator.jvmArgs>
     </properties>
 
     <dependencies>
@@ -50,7 +51,7 @@
                 <version>3.5.0</version>
                 <configuration>
                     <executable>${java.home}/bin/java</executable>
-                    <commandlineArgs>-classpath %classpath evaluator.Main ${evaluator.args}</commandlineArgs>
+                    <commandlineArgs>${evaluator.jvmArgs} -classpath %classpath evaluator.Main ${evaluator.args}</commandlineArgs>
                 </configuration>
             </plugin>
             <plugin>

@@ -2,12 +2,10 @@ package evaluator.processing;
 
 import evaluator.configuration.JobConfig;
 import evaluator.ingestion.OrderedCsvSource;
-import evaluator.ingestion.SourceMessage;
 import evaluator.model.IndicatorRecord;
 import evaluator.model.PriceEvent;
 import evaluator.model.AdvisoryRecord;
 import evaluator.model.QueryOutput;
-import evaluator.model.WindowClose;
 import java.time.Duration;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.Watermark;
@@ -34,19 +32,13 @@ public final class QueryOnePipeline {
         environment.getCheckpointConfig().disableCheckpointing();
         environment.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         environment.setParallelism(config.parallelism());
-        var messages = environment.fromSource(new OrderedCsvSource(config.inputs()),
-                WatermarkStrategy.<SourceMessage>noWatermarks(), "ordered-csv",
-                TypeInformation.of(SourceMessage.class)).setParallelism(1);
-        var events = messages.flatMap(new LatenessGate(config.watermarkDelayMs()))
-                .returns(TypeInformation.of(PriceEvent.class)).name("global-lateness").setParallelism(1);
-        var timed = events.assignTimestampsAndWatermarks(watermarks(config.watermarkDelayMs()))
-                .name("event-time").setParallelism(1);
-        SingleOutputStreamOperator<WindowClose> closes = timed.keyBy(event -> event.symbol)
+        var events = environment.fromSource(new OrderedCsvSource(config.inputs()), watermarks(),
+                "ordered-csv", TypeInformation.of(PriceEvent.class)).setParallelism(1);
+        // Flink drops events whose window has already been evaluated.
+        return events.keyBy(event -> event.symbol)
                 .window(TumblingEventTimeWindows.of(Duration.ofMinutes(5)))
-                .aggregate(new ClosingPriceAggregate(), new CloseWindowFunction())
-                .name("five-minute-close").setParallelism(config.parallelism());
-        return closes.keyBy(close -> close.symbol).process(new EmaFunction())
-                .name("ema38-ema100").setParallelism(config.parallelism());
+                .aggregate(new ClosingPriceAggregate(), new EmaFunction())
+                .name("five-minute-ema").setParallelism(config.parallelism());
     }
 
     public static DataStream<QueryOutput> queryOutput(SingleOutputStreamOperator<IndicatorRecord> indicators) {
@@ -59,13 +51,14 @@ public final class QueryOnePipeline {
         return indicatorOutputs.union(advisoryOutputs);
     }
 
-    private static WatermarkStrategy<PriceEvent> watermarks(long delay) {
+    /** Each window is evaluated once event time reaches the start of the next window (PDF 3.1 (7)). */
+    private static WatermarkStrategy<PriceEvent> watermarks() {
         return WatermarkStrategy.<PriceEvent>forGenerator(context -> new WatermarkGenerator<>() {
             private long highWater = Long.MIN_VALUE;
             @Override public void onEvent(PriceEvent event, long timestamp, WatermarkOutput output) {
                 highWater = Math.max(highWater, timestamp);
-                long cutoff = WindowTimes.cutoff(highWater, delay);
-                output.emitWatermark(new Watermark(cutoff == Long.MIN_VALUE ? cutoff : cutoff - 1));
+                // Flink fires a window when the watermark reaches its last millisecond, end - 1.
+                output.emitWatermark(new Watermark(highWater - 1));
             }
             @Override public void onPeriodicEmit(WatermarkOutput output) { }
         }).withTimestampAssigner((event, previous) -> event.timestampMillis());
