@@ -12,8 +12,11 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <flink.version>2.3.0</flink.version>
+        <flink.version>2.2.1</flink.version>
+        <kafka.connector.version>5.0.0-2.2</kafka.connector.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
         <junit.version>5.10.2</junit.version>
+        <evaluator.mainClass>evaluator.Main</evaluator.mainClass>
         <evaluator.args></evaluator.args>
         <evaluator.jvmArgs></evaluator.jvmArgs>
     </properties>
@@ -30,6 +33,16 @@
             <version>${flink.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-base</artifactId>
+            <version>${flink.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-kafka</artifactId>
+            <version>${kafka.connector.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>1.7.36</version>
@@ -39,6 +52,25 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Flink pins commons-compress but omits its commons-codec dependency, which Testcontainers needs. -->
+        <dependency>
+            <groupId>commons-codec</groupId>
+            <artifactId>commons-codec</artifactId>
+            <version>1.17.1</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -51,13 +83,26 @@
                 <version>3.5.0</version>
                 <configuration>
                     <executable>${java.home}/bin/java</executable>
-                    <commandlineArgs>${evaluator.jvmArgs} -classpath %classpath evaluator.Main ${evaluator.args}</commandlineArgs>
+                    <commandlineArgs>${evaluator.jvmArgs} -classpath %classpath ${evaluator.mainClass} ${evaluator.args}</commandlineArgs>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.2.5</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

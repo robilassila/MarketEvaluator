@@ -8,8 +8,8 @@ import evaluator.model.PriceEvent;
 import evaluator.processing.ClosingPriceAggregate;
 import evaluator.processing.EmaFunction;
 import evaluator.processing.QueryOnePipeline;
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
+import evaluator.replay.CsvReplay;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
@@ -25,7 +25,6 @@ import java.util.Map;
 import java.util.TreeMap;
 import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,27 +34,8 @@ class QueryOnePipelineTest {
 
     record Run(List<IndicatorRecord> records) { }
 
-    static Run run(JobConfig config) throws Exception {
-        try (var runtime = new LocalFlinkRuntime()) {
-            var environment = runtime.environment();
-            environment.enableCheckpointing(10);
-            var stream = QueryOnePipeline.build(environment, config);
-            assertFalse(environment.getCheckpointConfig().isCheckpointingEnabled());
-            var collector = new DataStream.Collector<IndicatorRecord>();
-            stream.collectAsync(collector);
-            var job = environment.executeAsync("Query 1 test");
-            try (var iterator = collector.getOutput()) {
-                List<IndicatorRecord> records = new ArrayList<>();
-                iterator.forEachRemaining(records::add);
-                job.getJobExecutionResult().get();
-                records.sort(Comparator.comparingLong((IndicatorRecord r) -> r.windowStart).thenComparing(r -> r.symbol));
-                return new Run(records);
-            }
-        }
-    }
-
     static Run run(Path input, int parallelism) throws Exception {
-        return run(new JobConfig(List.of(input.toAbsolutePath().toString()), parallelism));
+        return new Run(PipelineRun.run(input, parallelism).indicators());
     }
 
     static void near(double expected, double actual) {
@@ -149,10 +129,9 @@ class QueryOnePipelineTest {
         Files.writeString(later, HEADER + "SAME.FR,E,09-11-2021,,20,09-11-2021,09:00:00\n");
         Files.writeString(first, HEADER + "SAME.FR,E,08-11-2021,,10,08-11-2021,09:00:00\n");
         Files.writeString(tied, HEADER + "SAME.FR,E,08-11-2021,,15,08-11-2021,09:00:00\n");
-        JobConfig config = JobConfig.parse(new String[]{"--output-dir", temp.resolve("out").toString(),
-                later.toString(), tied.toString(), first.toString()});
-        assertEquals(List.of(first.toString(), tied.toString(), later.toString()), config.inputs());
-        Run result = run(config);
+        List<Path> ordered = CsvReplay.chronological(List.of(later, tied, first));
+        assertEquals(List.of(first, tied, later), ordered);
+        Run result = new Run(PipelineRun.run(CsvReplay.readAll(ordered), 1).indicators());
         assertEquals(2, result.records.size());
         record(result.records.get(0), "SAME.FR", "2021-11-08T09:00:00+02:00", 15, 2, 1,
                 "2021-11-08T09:00:00+02:00", 30.0 / 39, 30.0 / 101);
@@ -161,11 +140,10 @@ class QueryOnePipelineTest {
                 40.0 / 39 + 30.0 / 39 * 37.0 / 39, 40.0 / 101 + 30.0 / 101 * 99.0 / 101);
     }
 
-    @Test void headerOnlyFileCompletesWithoutIndicators(@TempDir Path temp) throws Exception {
+    @Test void headerOnlyFileReplaysNoEvents(@TempDir Path temp) throws Exception {
         Path input = temp.resolve("empty.csv");
         Files.writeString(input, HEADER);
-        Run result = run(input, 1);
-        assertTrue(result.records.isEmpty());
+        assertTrue(CsvReplay.readAll(List.of(input)).isEmpty());
     }
 
     @Test void invalidRowsProduceNoIndicators(@TempDir Path temp) throws Exception {
@@ -184,28 +162,25 @@ class QueryOnePipelineTest {
         assertEquals("VALID.FR", result.records.get(0).symbol);
     }
 
-    @Test void noHeaderAndMalformedCsvFailTheActualJob(@TempDir Path temp) throws Exception {
+    @Test void noHeaderAndMalformedCsvFailTheReplay(@TempDir Path temp) throws Exception {
         Path input = temp.resolve("broken.csv");
+        List<Path> inputs = List.of(input);
         Files.writeString(input, "# no records\n");
-        assertThrows(Exception.class, () -> run(input, 1));
+        assertThrows(IOException.class, () -> CsvReplay.readAll(inputs));
         Files.writeString(input, "ID,SecType\nSAME.FR,E\n");
-        assertThrows(Exception.class, () -> run(input, 1));
+        assertThrows(IOException.class, () -> CsvReplay.readAll(inputs));
         Files.writeString(input, HEADER + "\"unterminated\n");
-        assertThrows(Exception.class, () -> run(input, 1));
+        assertThrows(IOException.class, () -> CsvReplay.readAll(inputs));
     }
 
-    @Test void cliWritesIndicators(@TempDir Path temp) throws Exception {
-        ByteArrayOutputStream errors = new ByteArrayOutputStream();
-        Path output = temp.resolve("out");
-        assertEquals(0, Main.run(new String[]{"--output-dir", output.toString(),
-                FIXTURES.resolve("window-ordering.csv").toString()},
-                new PrintStream(new ByteArrayOutputStream()), new PrintStream(errors)), errors.toString());
-        List<String> lines = Files.readAllLines(output.resolve("indicators.csv"));
-        assertTrue(lines.get(0).startsWith("symbol,window_start,window_end,close,ema38,ema100"));
-        assertTrue(lines.stream().anyMatch(
-                line -> line.startsWith("SAME.FR,2021-11-08T09:00+02:00,2021-11-08T09:05+02:00,12.0,")));
-        assertEquals(5, lines.size());
-        assertEquals("", errors.toString());
+    @Test void pipelineConfigurationDisablesCheckpointing() throws Exception {
+        try (var runtime = new LocalFlinkRuntime()) {
+            var environment = runtime.environment();
+            environment.enableCheckpointing(10);
+            QueryOnePipeline.configure(environment, 2);
+            assertFalse(environment.getCheckpointConfig().isCheckpointingEnabled());
+            assertEquals(2, environment.getParallelism());
+        }
     }
 
     /** Independent oracle for this unquoted, positive-price sample only; no production parser/math calls. */
@@ -302,13 +277,20 @@ class QueryOnePipelineTest {
     }
 
     @Test void configurationRejectsInvalidOptions() {
-        for (String[] args : List.of(new String[0], new String[]{"--parallelism"},
-                new String[]{"--parallelism", "0", "--output-dir", "out", "file.csv"},
-                new String[]{"--watermark-delay-ms", "0", "--output-dir", "out", "file.csv"},
-                new String[]{"--unknown", "--output-dir", "out", "file.csv"},
+        for (String[] args : List.of(new String[]{"--parallelism"},
+                new String[]{"--parallelism", "0"},
+                new String[]{"--unknown"},
                 new String[]{"file.csv"})) {
             assertThrows(IllegalArgumentException.class, () -> JobConfig.parse(args));
         }
+    }
+
+    @Test void configurationDefaults() {
+        JobConfig defaults = JobConfig.parse(new String[0]);
+        assertEquals(new JobConfig("localhost:9092", 1, false, "ticks", "indicators", "advisories"), defaults);
+        JobConfig custom = JobConfig.parse(new String[]{"--bootstrap-servers", "kafka:9092", "--parallelism", "4",
+                "--bounded", "--ticks-topic", "t", "--indicators-topic", "i", "--advisories-topic", "a"});
+        assertEquals(new JobConfig("kafka:9092", 4, true, "t", "i", "a"), custom);
     }
 
     @Test void incrementalAggregateAndTimeModelsUseExplicitTypes() {

@@ -1,12 +1,9 @@
 package evaluator;
 
 import evaluator.configuration.JobConfig;
-import evaluator.model.QueryOutput;
-import evaluator.output.RunOutput;
+import evaluator.kafka.Topics;
 import evaluator.processing.QueryOnePipeline;
-import java.io.IOException;
 import java.io.PrintStream;
-import org.apache.flink.streaming.api.datastream.DataStream;
 
 public class Main {
     public static void main(String[] args) {
@@ -20,38 +17,38 @@ public class Main {
             config = JobConfig.parse(args);
         } catch (IllegalArgumentException exception) {
             error.println(exception.getMessage());
-            error.println("Usage: evaluator.Main [--parallelism N]"
-                    + " [--subscribe FULL_SYMBOL ...] --output-dir DIRECTORY <csv-file>...");
+            error.println(JobConfig.USAGE);
             return 2;
-        } catch (IOException exception) {
-            error.println("Could not read CSV input: " + exception.getMessage());
-            return 1;
         }
-        try (var runOutput = new RunOutput(config);
-            var runtime = new LocalFlinkRuntime()) {
-            var environment = runtime.environment();
-            var indicators = QueryOnePipeline.build(environment, config);
-            var queryOutput = QueryOnePipeline.queryOutput(indicators);
-            var collector = new DataStream.Collector<QueryOutput>();
-            queryOutput.collectAsync(collector);
-            var job = environment.executeAsync("MarketEvaluator Queries 1 and 2");
-            try (var results = collector.getOutput()) {
-                while (results.hasNext()) { runOutput.accept(results.next()); }
-                job.getJobExecutionResult().get();
-                output.println("Output directory: " + config.outputDirectory().toAbsolutePath().normalize());
-            } catch (Exception exception) {
-                try {
-                    job.cancel().get();
-                } catch (Exception cancellation) {
-                    exception.addSuppressed(cancellation);
+        try (var runtime = new LocalFlinkRuntime()) {
+            long events;
+            try (Topics topics = new Topics(config.bootstrapServers())) {
+                int partitions = topics.partitionCount(config.ticksTopic());
+                if (partitions == 0) {
+                    error.println("Topic " + config.ticksTopic() + " does not exist; run the producer first");
+                    return 1;
                 }
-                throw exception;
+                if (config.parallelism() > partitions) {
+                    error.println("Parallelism " + config.parallelism() + " exceeds the " + partitions
+                            + " partitions of " + config.ticksTopic() + "; extra readers would stay idle");
+                    return 2;
+                }
+                topics.ensure(config.indicatorsTopic(), partitions);
+                topics.ensure(config.advisoriesTopic(), partitions);
+                events = topics.recordCount(config.ticksTopic());
             }
+            var environment = runtime.environment();
+            QueryOnePipeline.buildKafkaJob(environment, config);
+            var result = environment.executeAsync("MarketEvaluator Queries 1 and 2").getJobExecutionResult().get();
+            long millis = result.getNetRuntime();
+            // Approximate unless the topic was fully loaded before the job started.
+            output.printf("Processed %d events in %.1f s (%.0f events/s) at parallelism %d%n",
+                    events, millis / 1000.0, events * 1000.0 / Math.max(1, millis), config.parallelism());
             return 0;
         } catch (Exception exception) {
             Throwable cause = exception;
             while (cause.getCause() != null) { cause = cause.getCause(); }
-            error.println("Could not run evaluation for input " + config.inputs() + ": " + cause.getMessage());
+            error.println("Could not run evaluation: " + cause.getMessage());
             return 1;
         }
     }

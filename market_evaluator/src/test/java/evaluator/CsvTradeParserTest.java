@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import evaluator.replay.TickProducer;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -25,30 +26,29 @@ class CsvTradeParserTest {
     private final CsvTradeParser parser = new CsvTradeParser();
 
     @Test
-    void cliPrintsUsageWhenInputArgumentIsMissingOrOptionsAreInvalid() {
+    void cliPrintsUsageForInvalidOptions() {
         ByteArrayOutputStream errorBytes = new ByteArrayOutputStream();
         PrintStream error = new PrintStream(errorBytes);
 
-        assertEquals(2, Main.run(new String[0], new PrintStream(new ByteArrayOutputStream()), error));
-        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main [--parallelism N]"));
+        assertEquals(2, Main.run(new String[]{"--parallelism", "0"},
+                new PrintStream(new ByteArrayOutputStream()), error));
+        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main"));
 
         errorBytes.reset();
-        assertEquals(2, Main.run(new String[]{"--parallelism", "0", "first.csv"},
-                new PrintStream(new ByteArrayOutputStream()), error));
-        assertTrue(errorBytes.toString().contains("Usage: evaluator.Main [--parallelism N]"));
+        assertEquals(2, TickProducer.run(new String[0], new PrintStream(new ByteArrayOutputStream()), error));
+        assertTrue(errorBytes.toString().contains("Usage: evaluator.replay.TickProducer"));
     }
 
     @Test
-    void cliPrintsReadableErrorForMissingInputFile(@TempDir Path tempDir) {
+    void producerPrintsReadableErrorForMissingInputFile(@TempDir Path tempDir) {
         ByteArrayOutputStream errorBytes = new ByteArrayOutputStream();
         PrintStream error = new PrintStream(errorBytes);
 
-        int exitCode = Main.run(new String[]{"--output-dir", tempDir.resolve("out").toString(),
-                tempDir.resolve("missing.csv").toString()},
+        int exitCode = TickProducer.run(new String[]{tempDir.resolve("missing.csv").toString()},
                 new PrintStream(new ByteArrayOutputStream()), error);
 
-        assertEquals(1, exitCode);
-        assertTrue(errorBytes.toString().contains("Could not read CSV"));
+        assertEquals(2, exitCode);
+        assertTrue(errorBytes.toString().contains("Not a readable CSV file"));
         assertTrue(errorBytes.toString().contains("missing.csv"));
     }
 

@@ -1,4 +1,4 @@
-name: Unit tests
+name: Tests
 
 on:
   push:
@@ -23,6 +23,6 @@ jobs:
           cache: maven
           cache-dependency-path: market_evaluator/pom.xml
 
-      - name: Run unit tests
+      - name: Run unit and integration tests
         working-directory: market_evaluator
-        run: mvn --batch-mode --no-transfer-progress test
+        run: mvn --batch-mode --no-transfer-progress verify

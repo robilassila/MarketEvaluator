@@ -2,8 +2,6 @@ package evaluator;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -11,7 +9,6 @@ import java.util.concurrent.TimeUnit;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 class LocalFlinkRuntimeTest {
     @Test
@@ -55,39 +52,5 @@ class LocalFlinkRuntimeTest {
             assertEquals(JobStatus.CANCELED, job.getJobStatus().get());
         }
         assertFalse(runtime.isRunning());
-    }
-
-    @Test
-    void cliWithWarningsEnabledHasNoShutdownException(@TempDir Path temp) throws Exception {
-        Path sample = Path.of("../data/sample-positive-prices-08.csv");
-        cli(sample, temp.resolve("sample-output"), temp.resolve("sample.log"), 0);
-        assertEquals(1264, Files.readAllLines(temp.resolve("sample-output").resolve("indicators.csv")).size());
-
-        Path malformed = temp.resolve("malformed.csv");
-        Files.writeString(malformed, "ID,SecType,Date,Time,Last,Trading date,Trading time\n\"unterminated\n");
-        String failure = cli(malformed, temp.resolve("failure-output"), temp.resolve("failure.log"), 1);
-        assertTrue(failure.contains("Could not run evaluation for input"));
-        assertTrue(failure.contains("quoted CSV fields are not supported"));
-    }
-
-    private static String cli(Path input, Path outputDirectory, Path log, int expectedExit) throws Exception {
-        Process process = new ProcessBuilder(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
-                "-cp", System.getProperty("java.class.path"), "evaluator.Main",
-                "--output-dir", outputDirectory.toString(), input.toString())
-                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
-        try {
-            assertTrue(process.waitFor(45, TimeUnit.SECONDS), "CLI did not terminate");
-            String output = Files.readString(log);
-            assertEquals(expectedExit, process.exitValue(), output);
-            assertFalse(output.contains("MiniCluster is not yet running or has already been shut down"), output);
-            assertFalse(output.contains("Failed to get job status"), output);
-            return output;
-        } finally {
-            if (process.isAlive()) {
-                process.destroyForcibly().waitFor();
-            }
-        }
     }
 }
