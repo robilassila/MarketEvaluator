@@ -37,6 +37,17 @@ services:
       - ./data:/workspace/data:ro
       - ./results:/workspace/results
 
+  visualizer:
+    build: market_evaluator
+    image: market-evaluator
+    profiles: [tools]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["visualizer"]
+    ports:
+      - "8080:8080"
+
   # Runs Maven: docker compose run --rm test [goals], default verify.
   test:
     image: maven:3.9-eclipse-temurin-17

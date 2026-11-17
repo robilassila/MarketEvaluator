@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1018">
+  <title>Market evaluator · Live monitor</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Market evaluator home">
+        <span>Market<span class="brand-muted"> Evaluator</span></span>
+      </a>
+      <div class="feed-state"><span class="state-dot" id="state-dot"></span><span id="feed-state">Waiting for symbol</span></div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <div class="eyebrow"><span class="eyebrow-line"></span> REAL-TIME MARKET SIGNALS</div>
+          <h1>Market monitor</h1>
+          <p>Track five-minute closes, moving averages and crossover advisories.</p>
+        </div>
+        <form class="subscribe-form" id="subscribe-form">
+          <label for="symbol-input">Market symbol</label>
+          <div class="input-row">
+            <div class="input-wrap symbol-picker">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input id="symbol-input" name="symbol" type="text" role="combobox"
+                aria-autocomplete="list" aria-controls="symbol-options" aria-expanded="false"
+                placeholder="Search or enter a symbol" autocomplete="off" spellcheck="false" required>
+              <div id="symbol-options" class="symbol-options" role="listbox" aria-label="Market symbols" hidden></div>
+            </div>
+            <button type="submit"><span>Subscribe</span><span aria-hidden="true">↗</span></button>
+          </div>
+          <div class="form-hint" id="form-hint">Choose a symbol from the feed or enter one directly.</div>
+        </form>
+      </section>
+
+      <section class="content-grid" aria-label="Market data">
+        <article class="panel chart-panel">
+          <div class="panel-heading">
+            <div>
+              <div class="section-label">PRICE &amp; INDICATORS</div>
+              <h2 id="chart-title">Select a symbol</h2>
+            </div>
+            <div class="chart-meta"><span class="interval-tag">5 MIN</span><span id="point-count">—</span></div>
+          </div>
+          <div class="chart-wrap" id="chart-wrap">
+            <div class="empty-state" id="chart-empty">
+              <span class="empty-icon" aria-hidden="true">⌁</span>
+              <strong>Your chart is ready</strong>
+              <span>Subscribe to a symbol to see its live price and EMAs.</span>
+            </div>
+            <svg id="price-chart" class="price-chart" viewBox="0 0 960 400" role="img"
+              aria-label="Five-minute close price, EMA38 and EMA100 chart"></svg>
+          </div>
+          <div class="legend">
+            <span><i class="legend-swatch close-swatch"></i>Close</span>
+            <span><i class="legend-swatch ema38-swatch"></i>EMA38</span>
+            <span><i class="legend-swatch ema100-swatch"></i>EMA100</span>
+            <span class="legend-unit">Price</span>
+          </div>
+          <div class="chart-footer"><span id="latest-update">No data received</span><span>Window end · UTC+02:00</span></div>
+        </article>
+
+        <article class="panel advisory-panel">
+          <div class="panel-heading">
+            <div>
+              <div class="section-label">CROSSOVER SIGNALS</div>
+              <h2>Advisories</h2>
+            </div>
+            <span class="count-badge" id="advisory-count">0</span>
+          </div>
+          <div class="advisory-summary">
+            <span class="summary-pulse" aria-hidden="true"></span>
+            <span id="advisory-summary">Waiting for crossover signals</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Signal</th><th>Window end</th></tr></thead>
+              <tbody id="advisory-rows"></tbody>
+            </table>
+            <div class="table-empty" id="advisory-empty">No advisories for this symbol yet.</div>
+          </div>
+          <div class="advisory-footer"><span class="signal-buy">BUY</span> EMA38 crosses above EMA100 <span class="signal-sell">SELL</span> EMA38 crosses below EMA100</div>
+        </article>
+      </section>
+      <footer class="page-footer"><span>MarketEvaluator</span><span>Signals are generated from five-minute event-time windows.</span></footer>
+    </main>
+  </div>
+</body>
+</html>

@@ -45,6 +45,9 @@ Everything runs in Docker
   argument selects the program: `producer`, `job` or `subscriber`. It mounts
   `data/` (read-only) and `results/`, so paths are relative to the repository
   root. `market_evaluator/docker-entrypoint.sh` lists its environment variables.
+- `visualizer`, a small browser dashboard backed by the Kafka indicator and
+  advisory topics. It is available on `http://localhost:8080` and keeps the
+  most recent 240 indicators and 100 advisories per symbol in memory.
 - `test`, which runs Maven over the mounted sources.
 
 `docker compose run` builds the image on first use and starts Kafka first.
@@ -65,6 +68,57 @@ docker compose run --rm evaluator subscriber \
 
 Topics live in the Kafka container, so `docker compose down` deletes them;
 `docker compose stop` keeps them.
+
+## Live visualizer
+
+Start Kafka and load some ticks, then keep the evaluator job and visualizer
+running in separate terminals:
+
+```bash
+docker compose up -d kafka
+docker compose run --rm evaluator producer data/sample-positive-prices-08.csv
+docker compose run --rm evaluator job --parallelism 4
+# In another terminal:
+docker compose run --rm --service-ports visualizer
+```
+
+Open `http://localhost:8080`, enter a full symbol such as `IEBBB.FR`, and
+subscribe. The chart plots the five-minute close, EMA38 and EMA100; crossover
+advisories appear alongside it. The visualizer reads both output topics from
+their beginning when it starts, then follows new records. Keep the job running
+for a live feed. The visualizer is read-only and does not change topic data.
+
+### Crossover demo
+
+`data/ema-crossover-demo.csv` is a small synthetic feed for `DEMO.FR`. Its
+price alternates between sustained high and low levels to produce repeated
+EMA38/EMA100 crossovers. It contains 841 five-minute points and is paced at one
+event per second below, so the replay lasts about 14 minutes. Use one Kafka
+partition because the file contains only one symbol.
+
+```bash
+docker compose up -d kafka
+docker compose build evaluator
+```
+
+In separate terminals, start the producer, job and visualizer. Start the job
+shortly after the producer creates its input topic:
+
+```bash
+docker compose run --rm evaluator producer \
+  --topic demo-ticks --partitions 1 --rate 1 data/ema-crossover-demo.csv
+```
+
+```bash
+docker compose run --rm evaluator job --parallelism 1 \
+  --ticks-topic demo-ticks --indicators-topic demo-indicators \
+  --advisories-topic demo-advisories
+```
+
+```bash
+docker compose run --rm --service-ports visualizer visualizer \
+  --indicators-topic demo-indicators --advisories-topic demo-advisories
+```
 
 Things worth knowing:
 
