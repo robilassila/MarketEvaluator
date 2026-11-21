@@ -148,15 +148,55 @@ Things worth knowing:
 
 ## Benchmarks
 
-Both scripts build the image, start the broker and run every program in a
-container. Their header comments list the options.
+Both scripts run on the host. `scripts/benchmark.py` needs Python 3.10 or
+later and nothing else. It builds the evaluator image, starts Kafka, runs every
+program in a container and samples each container's CPU and memory with
+`docker stats`. `scripts/plot-benchmarks.py` also needs matplotlib, which
+`uv run` installs from the script's header. Without uv, install it with
+`python3 -m pip install matplotlib` and run the script with `python3`.
 
-- `scripts/benchmark-throughput.sh` measures resource scaling. It runs the
-  bounded job over the loaded ticks topic at P = 1, 2, 4, 8 and 16, and writes
-  events/s to `results/throughput.csv`.
-- `scripts/benchmark-latency.sh <csv-file>...` measures workload scaling. For
-  each producer rate, it starts the job live on a fresh topic, replays the
-  files at that rate, and records latency percentiles in `results/latency/`.
+```bash
+# Resource scaling. Load the ticks topic first (see "Run locally").
+python3 scripts/benchmark.py throughput [--parallelisms 1 2 4 8 16] [--repeat 3]
+
+# Workload scaling. Creates and deletes its own topics; input files must lie under data/.
+python3 scripts/benchmark.py latency [--rates 50000 100000 200000 400000] \
+  [--parallelism 4] [--partitions 16] [--drain-timeout 10] data/<day-file>.csv...
+
+# Figures for the report. The script's docstring lists them.
+uv run scripts/plot-benchmarks.py
+```
+
+The brackets show each option's default.
+
+`throughput` runs the bounded job once per parallelism and repetition. Each
+run gets fresh output topics, which are deleted afterwards. The repetitions
+give the plots their error bars.
+
+`latency` handles one target rate at a time. It starts the job live on a fresh
+ticks topic and waits until the job reports that it is running. Then it replays
+the files at the target rate and runs the subscriber until the job's output
+has been quiet for `--drain-timeout` seconds.
+
+Each run overwrites the earlier results of the same benchmark:
+
+| File | Contents |
+|---|---|
+| `results/throughput/throughput.csv` | `parallelism, repetition, events, seconds, events_per_second` |
+| `results/throughput/resources.csv` | `parallelism, repetition, container, elapsed_s, cpu_percent, memory_bytes`, sampled over the whole job run |
+| `results/latency/summary.csv` | `target_rate, achieved_rate, events, windows, p50_ms, p95_ms, p99_ms, max_ms` |
+| `results/latency/resources.csv` | `target_rate, container, elapsed_s, cpu_percent, memory_bytes`, sampled during the replay |
+| `results/latency/rate-<R>/` | `latency.csv` (one row per window), `boundaries.csv`, `producer.log`, `job.log` and the subscriber's output |
+| `results/*/host.json` | CPUs and memory available to Docker |
+
+About these files:
+
+- **Resource samples** arrive about once per second per container. The
+  `container` column is `kafka`, `job` or `producer`.
+- **`cpu_percent`** is relative to one CPU, so it can exceed 100.
+- **`achieved_rate`** can fall short of `target_rate` when the producer
+  can't keep up.
+- **Percentiles** use the nearest-rank method.
 
 Latency of a window runs from the moment the producer sends the first event
 at or after the window's end, to the moment the job writes the window's
@@ -181,3 +221,6 @@ docker compose run --rm test test   # unit tests only
 The `*IT` tests start their own Kafka container through Testcontainers. The
 `test` service mounts the host's Docker socket for this; the comments in
 `docker-compose.yml` explain how the tests reach that container.
+
+The benchmark scripts' parsers have their own tests:
+`python3 -m unittest discover -s scripts`.

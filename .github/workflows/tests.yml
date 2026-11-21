@@ -26,3 +26,6 @@ jobs:
       - name: Run unit and integration tests
         working-directory: market_evaluator
         run: mvn --batch-mode --no-transfer-progress verify
+
+      - name: Run benchmark script tests
+        run: python3 -m unittest discover -s scripts

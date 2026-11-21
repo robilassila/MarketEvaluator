@@ -95,6 +95,7 @@ class KafkaPipelineIT {
             assertTrue(process.waitFor(90, TimeUnit.SECONDS), "Job did not terminate");
             String output = Files.readString(log);
             assertEquals(0, process.exitValue(), output);
+            assertTrue(output.contains(Main.RUNNING), output);
             assertTrue(output.contains("Processed 10000 events"), output);
             assertFalse(output.contains("MiniCluster is not yet running or has already been shut down"), output);
             assertFalse(output.contains("Failed to get job status"), output);

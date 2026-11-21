@@ -19,3 +19,5 @@ test/resources/projects/maven/salut/testGradle
 test-temp
 data/debs*
 results/
+__pycache__/
+.venv/
