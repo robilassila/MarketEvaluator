@@ -68,7 +68,7 @@ docker compose run --rm --service-ports visualizer visualizer \
 ```bash
 python3 scripts/benchmark.py throughput   # after loading the ticks topic
 python3 scripts/benchmark.py latency data/<day-file>.csv
-uv run scripts/plot-benchmarks.py
+python3 scripts/plot-benchmarks.py
 ```
 
 Results go to `results/`. Pass `--help` for options.

@@ -18,6 +18,9 @@ full page width.
     latency-cdf  distribution of window latency per input rate
     cpu          mean CPU per container against parallelism and input rate
     memory       peak memory per container against parallelism and input rate
+
+Latency runs whose producer fell short of the target rate are left out of every figure: the
+producer was then running flat out, so they repeat the same load at a misleading target rate.
 """
 
 import csv
@@ -43,6 +46,7 @@ HEIGHT = 2.3
 CONTAINERS = {"kafka": "#4C72B0", "job": "#DD8452", "producer": "#55A868"}
 PERCENTILES = {"p50_ms": ("p50", "#4C72B0"), "p95_ms": ("p95", "#DD8452"), "p99_ms": ("p99", "#C44E52")}
 REFERENCE = "#7F7F7F"
+MINIMUM_ACHIEVED_FRACTION = 0.95
 
 plt.rcParams.update({
     "font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
@@ -51,14 +55,23 @@ plt.rcParams.update({
 })
 
 
-def abbreviated(axis, minor: bool = True) -> None:
+def compact(value: float) -> str:
+    """Formats 1600000 as 1.6M and 388403 as 388k."""
+    if value >= 1e6:
+        return f"{value / 1e6:.3g}M"
+    if value >= 1e3:
+        return f"{value / 1e3:.3g}k"
+    return f"{value:g}"
+
+
+def abbreviated(axis, minor: bool = True, subs: tuple[float, ...] = (2, 5)) -> None:
     """Labels a logarithmic axis as 200, 500, 1k, 2k, … instead of powers of ten.
     Without `minor`, only the major ticks, such as ones set explicitly, are labelled."""
     def label(value, _):
-        return f"{value / 1e6:g}M" if value >= 1e6 else f"{value / 1e3:g}k" if value >= 1e3 else f"{value:g}"
+        return compact(value)
     axis.set_major_formatter(FuncFormatter(label))
     if minor:
-        axis.set_minor_locator(LogLocator(subs=(2, 5)))
+        axis.set_minor_locator(LogLocator(subs=subs))
         axis.set_minor_formatter(FuncFormatter(label))
     else:
         axis.set_minor_locator(NullLocator())
@@ -161,7 +174,7 @@ def plot_latency(rows) -> None:
     axis.set_yscale("log")
     axis.set_xticks(rates)
     abbreviated(axis.xaxis, minor=False)
-    abbreviated(axis.yaxis)
+    abbreviated(axis.yaxis, subs=(2, 3, 5))
     axis.set_xlabel("Achieved input rate (events/s)")
     axis.set_ylabel("Window latency (ms)")
     axis.legend(frameon=False)
@@ -179,13 +192,24 @@ def plot_latency_cdf(summary) -> None:
         values = sorted(max(float(window["latency_millis"]), 1) for window in windows)
         fractions = [(rank + 1) / len(values) for rank in range(len(values))]
         axis.step(values, fractions, where="post", color=colors(0.85 * index / max(1, len(rows) - 1)),
-                  label=f"{int(float(row['achieved_rate'])):,} ev/s")
+                  label=f"{compact(float(row['achieved_rate']))} ev/s")
     axis.set_xscale("log")
     axis.set_xlabel("Window latency (ms)")
     axis.set_ylabel("Fraction of windows")
     axis.set_ylim(0, 1.02)
     axis.legend(frameon=False)
     save(figure, "latency-cdf")
+
+
+def reached_target(summary: list[dict[str, str]]) -> list[dict[str, str]]:
+    kept = []
+    for row in summary:
+        if float(row["achieved_rate"]) >= MINIMUM_ACHIEVED_FRACTION * float(row["target_rate"]):
+            kept.append(row)
+        else:
+            print(f"Left out latency run at {compact(float(row['target_rate']))} events/s: "
+                  f"producer reached only {compact(float(row['achieved_rate']))}")
+    return kept
 
 
 def per_run(rows: list[dict[str, str]], keys: tuple[str, ...], value: str, reduce) -> dict:
@@ -205,7 +229,7 @@ def per_run(rows: list[dict[str, str]], keys: tuple[str, ...], value: str, reduc
 
 
 def stacked_bars(axis, by_run: dict, scale: float) -> None:
-    labels = [f"{int(key[0]):,}" for key in by_run]
+    labels = [compact(int(key[0])) for key in by_run]
     bottoms = [0.0] * len(labels)
     for container, color in CONTAINERS.items():
         heights = [values.get(container, 0) / scale for values in by_run.values()]
@@ -215,13 +239,15 @@ def stacked_bars(axis, by_run: dict, scale: float) -> None:
         bottoms = [b + h for b, h in zip(bottoms, heights)]
 
 
-def resource_figure(name: str, value: str, reduce, ylabel: str, scale: float, ceiling) -> None:
+def resource_figure(name: str, value: str, reduce, ylabel: str, scale: float, ceiling,
+                    latency_targets: set[str]) -> None:
     panels = []
     throughput_rows = read_csv(THROUGHPUT / "resources.csv")
     if throughput_rows:
         panels.append((per_run(throughput_rows, ("parallelism",), value, reduce),
                        "Parallelism P (bounded job)", read_host(THROUGHPUT)))
-    latency_rows = read_csv(LATENCY / "resources.csv")
+    latency_rows = [row for row in read_csv(LATENCY / "resources.csv") or []
+                    if row["target_rate"] in latency_targets]
     if latency_rows:
         panels.append((per_run(latency_rows, ("target_rate",), value, reduce),
                        "Target input rate (events/s, live job)", read_host(LATENCY)))
@@ -252,17 +278,18 @@ def main() -> None:
     else:
         print("Skipped throughput and speedup: no throughput.csv")
 
-    summary = read_csv(LATENCY / "summary.csv")
+    summary = reached_target(read_csv(LATENCY / "summary.csv") or [])
     if summary:
         plot_latency(summary)
         plot_latency_cdf(summary)
     else:
         print("Skipped latency and latency-cdf: no summary.csv")
+    latency_targets = {row["target_rate"] for row in summary}
 
     resource_figure("cpu", "cpu_percent", statistics.mean, "Mean CPU (% of one CPU)", 1,
-                    lambda host: (host["cpus"] * 100, f"{host['cpus']} CPUs"))
+                    lambda host: (host["cpus"] * 100, f"{host['cpus']} CPUs"), latency_targets)
     resource_figure("memory", "memory_bytes", max, "Peak memory (GiB)", 2**30,
-                    lambda host: (host["memory_bytes"] / 2**30, "Docker memory"))
+                    lambda host: (host["memory_bytes"] / 2**30, "Docker memory"), latency_targets)
 
 
 if __name__ == "__main__":
